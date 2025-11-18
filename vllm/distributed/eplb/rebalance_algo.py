@@ -96,7 +96,10 @@ def replicate_experts(
     """
     n, num_log = weight.shape
     num_redundant = num_phy - num_log
-    logger.info(f"[replicate_experts] n={n}, num_log={num_log}, num_phy={num_phy}, num_redundant={num_redundant}")
+    logger.info(
+        "[replicate_experts] n=%d, num_log=%d, num_phy=%d, num_redundant=%d",
+        n, num_log, num_phy, num_redundant
+    )
     assert num_redundant >= 0
     device = weight.device
     phy2log = torch.arange(num_phy, dtype=torch.int64, device=device).repeat(n, 1)
@@ -136,8 +139,12 @@ def rebalance_experts_hierarchical(
             [num_moe_layers, num_logical_experts]
     """
     num_layers, num_logical_experts = weight.shape
-    logger.info(f"[rebalance_experts_hierarchical] num_layers={num_layers}, num_logical_experts={num_logical_experts}, "
-                f"num_physical_experts={num_physical_experts}, num_groups={num_groups}, num_nodes={num_nodes}, num_gpus={num_gpus}")
+    logger.info(
+        "[rebalance_experts_hierarchical] num_layers=%d, num_logical_experts=%d, "
+        "num_physical_experts=%d, num_groups=%d, num_nodes=%d, num_gpus=%d",
+        num_layers, num_logical_experts, num_physical_experts, 
+        num_groups, num_nodes, num_gpus
+    )
     assert num_logical_experts % num_groups == 0
     group_size = num_logical_experts // num_groups
     assert num_groups % num_nodes == 0
@@ -173,8 +180,11 @@ def rebalance_experts_hierarchical(
     tokens_per_mlog = weight.gather(-1, mlog2log).view(
         -1, num_logical_experts // num_nodes
     )
-    logger.info(f"[rebalance_experts_hierarchical] Step 2: calling replicate_experts with "
-                f"tokens_per_mlog.shape={tokens_per_mlog.shape}, num_physical_experts//num_nodes={num_physical_experts // num_nodes}")
+    logger.info(
+        "[rebalance_experts_hierarchical] Step 2: calling replicate_experts with "
+        "tokens_per_mlog.shape=%s, num_physical_experts//num_nodes=%d",
+        tokens_per_mlog.shape, num_physical_experts // num_nodes
+    )
     phy2mlog, phyrank, mlogcnt = replicate_experts(
         tokens_per_mlog, num_physical_experts // num_nodes
     )
@@ -235,23 +245,30 @@ def rebalance_experts(
             replicas for each logical expert
     """
     num_layers, num_logical_experts = weight.shape
-    logger.info(f"[rebalance_experts] ENTRY - num_layers={num_layers}, num_logical_experts={num_logical_experts}, "
-                f"num_replicas={num_replicas}, num_groups={num_groups}, num_nodes={num_nodes}, num_gpus={num_gpus}")
+    logger.info(
+        "[rebalance_experts] ENTRY - num_layers=%d, num_logical_experts=%d, "
+        "num_replicas=%d, num_groups=%d, num_nodes=%d, num_gpus=%d",
+        num_layers, num_logical_experts, num_replicas, 
+        num_groups, num_nodes, num_gpus
+    )
     weight = weight.float()
     if num_groups % num_nodes == 0:
         # use hierarchical load-balance policy
-        logger.info(f"[rebalance_experts] Using hierarchical load-balance policy")
+        logger.info("[rebalance_experts] Using hierarchical load-balance policy")
         phy2log, phyrank, logcnt = rebalance_experts_hierarchical(
             weight, num_replicas, num_groups, num_nodes, num_gpus
         )
     else:
         # use global load-balance policy
-        logger.info(f"[rebalance_experts] Using global load-balance policy")
+        logger.info("[rebalance_experts] Using global load-balance policy")
         phy2log, phyrank, logcnt = rebalance_experts_hierarchical(
             weight, num_replicas, 1, 1, num_gpus
         )
     num_redundant_experts = num_replicas - num_logical_experts
-    logger.info(f"[rebalance_experts] num_redundant_experts={num_redundant_experts} (num_replicas={num_replicas} - num_logical_experts={num_logical_experts})")
+    logger.info(
+        "[rebalance_experts] num_redundant_experts=%d (num_replicas=%d - num_logical_experts=%d)",
+        num_redundant_experts, num_replicas, num_logical_experts
+    )
     maxlogcnt = num_redundant_experts + 1
     log2phy: torch.Tensor = torch.full(
         (num_layers, num_logical_experts, maxlogcnt),
