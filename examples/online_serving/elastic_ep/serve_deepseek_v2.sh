@@ -54,6 +54,14 @@ done
 
 echo "Starting vLLM server for $MODEL_NAME with data parallel size: $DATA_PARALLEL_SIZE and redundant experts: $REDUNDANT_EXPERTS"
 
+# Get the vLLM source directory (assuming script is in vllm/examples/online_serving/elastic_ep/)
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+VLLM_SOURCE_DIR="$(cd "$SCRIPT_DIR/../../.." && pwd)"
+echo "Using vLLM source code from: $VLLM_SOURCE_DIR"
+
+# Set PYTHONPATH to use source code directly
+export PYTHONPATH="$VLLM_SOURCE_DIR:$PYTHONPATH"
+
 export RAY_DEDUP_LOGS=0
 export VLLM_ALL2ALL_BACKEND="pplx"
 export VLLM_USE_DEEP_GEMM=1
