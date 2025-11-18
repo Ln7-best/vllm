@@ -67,7 +67,7 @@ export VLLM_ALL2ALL_BACKEND="pplx"
 export VLLM_USE_DEEP_GEMM=1
 
 # Use python -m to run from source code instead of installed vllm command
-python -m vllm.entrypoints.cli.main serve $MODEL_NAME \
+python3 -m vllm.entrypoints.cli.main serve $MODEL_NAME \
     --data-parallel-size $DATA_PARALLEL_SIZE \
     --data-parallel-size-local $DATA_PARALLEL_SIZE \
     --data-parallel-backend ray \
