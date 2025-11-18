@@ -66,7 +66,8 @@ export RAY_DEDUP_LOGS=0
 export VLLM_ALL2ALL_BACKEND="pplx"
 export VLLM_USE_DEEP_GEMM=1
 
-vllm serve $MODEL_NAME \
+# Use python -m to run from source code instead of installed vllm command
+python -m vllm.entrypoints.cli.main serve $MODEL_NAME \
     --data-parallel-size $DATA_PARALLEL_SIZE \
     --data-parallel-size-local $DATA_PARALLEL_SIZE \
     --data-parallel-backend ray \
