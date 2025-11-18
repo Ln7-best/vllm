@@ -21,10 +21,26 @@ $PIP_CMD install cmake torch ninja
 # build nvshmem
 pushd $WORKSPACE
 mkdir -p nvshmem_src
-wget https://developer.download.nvidia.com/compute/redist/nvshmem/3.2.5/source/nvshmem_src_3.2.5-1.txz
+
+# Download NVSHMEM source if not exists
+if [ ! -f "nvshmem_src_3.2.5-1.txz" ]; then
+    echo "Downloading NVSHMEM source..."
+    wget https://developer.download.nvidia.com/compute/redist/nvshmem/3.2.5/source/nvshmem_src_3.2.5-1.txz
+else
+    echo "NVSHMEM source already exists, skipping download"
+fi
+
 tar -xvf nvshmem_src_3.2.5-1.txz -C nvshmem_src --strip-components=1
 pushd nvshmem_src
-wget https://github.com/deepseek-ai/DeepEP/raw/main/third-party/nvshmem.patch
+
+# Download nvshmem.patch if not exists
+if [ ! -f "nvshmem.patch" ]; then
+    echo "Downloading nvshmem.patch..."
+    wget https://github.com/deepseek-ai/DeepEP/raw/main/third-party/nvshmem.patch
+else
+    echo "nvshmem.patch already exists, skipping download"
+fi
+
 git init
 git apply -vvv nvshmem.patch
 
