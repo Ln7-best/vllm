@@ -759,6 +759,9 @@ class AsyncLLM(EngineClient):
             "Waiting for requests to drain before scaling up to %s engines...",
             new_data_parallel_size,
         )
+        logger.info(
+            "test log",
+        )
         await self.wait_for_requests_to_drain(drain_timeout)
         logger.info(
             "Requests have been drained, proceeding with scale to %s engines",
