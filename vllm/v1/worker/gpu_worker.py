@@ -651,7 +651,7 @@ class Worker(WorkerBase):
         assert self.model_runner.eplb_state is not None
         self.model_runner.eplb_state.rearrange(
             execute_shuffle=True,
-            global_expert_load=None,
+            global_expert_loads=None,
             rank_mapping=rank_mapping,
         )
         torch.cuda.synchronize()
