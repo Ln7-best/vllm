@@ -14,7 +14,9 @@ on how the EPLB algorithm works.
 
 import numpy as np
 import torch
+from vllm.logger import init_logger
 
+logger = init_logger(__name__)
 
 def balanced_packing(
     weight: torch.Tensor, num_packs: int
@@ -95,6 +97,7 @@ def replicate_experts(
     n, num_log = weight.shape
     num_redundant = num_phy - num_log
     assert num_redundant >= 0
+    logger.info("Num of redundant experts: %d phy num: %d log num: %d", num_redundant, num_phy, num_log)
     device = weight.device
     phy2log = torch.arange(num_phy, dtype=torch.int64, device=device).repeat(n, 1)
     rank = torch.zeros(n, num_phy, dtype=torch.int64, device=device)
