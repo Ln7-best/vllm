@@ -263,11 +263,11 @@ def shuffle_layer(
             logger.info(f"[Rank 1] Created dummy recv from rank 0")
     
     if dummy_p2p_ops:
-        logger.info(f"[Rank {ep_rank}] Testing batch_isend_irecv with {len(dummy_p2p_ops)} ops...")
+        logger.info(f"[Rank {ep_rank}] Testing batch_isend_irecv...")
         reqs = batch_isend_irecv(dummy_p2p_ops)
         for req in reqs:
             req.wait()
-        logger.info(f"[Rank {ep_rank}] ✅ Dummy P2P test completed")
+        logger.info(f"[Rank {ep_rank}] ✅ Dummy test completed")
     
     # Skip real operations
     # if p2p_ops:
