@@ -779,7 +779,7 @@ class Worker(WorkerBase):
             new_physical_experts = eplb_model_state.physical_to_logical_map.shape[1]
             parallel_config.eplb_config.num_redundant_experts = (
                 new_physical_experts
-                - self.model_runner.eplb_state.logical_replica_count.shape[1]
+                - eplb_model_state.logical_replica_count.shape[1]
             )
             global_expert_loads = None
         else:
