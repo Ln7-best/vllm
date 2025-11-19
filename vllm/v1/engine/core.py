@@ -1150,6 +1150,11 @@ class DPEngineCoreProc(EngineCoreProc):
         dp_size = vllm_config.parallel_config.data_parallel_size
         local_dp_rank = vllm_config.parallel_config.data_parallel_rank_local
 
+        logger.info(
+            "[DP Init] Initializing data parallel (dp_rank=%d, dp_size=%d, local_dp_rank=%d)",
+            dp_rank, dp_size, local_dp_rank
+        )
+
         assert dp_size > 1
         assert local_dp_rank is not None
         assert 0 <= local_dp_rank <= dp_rank < dp_size
@@ -1166,7 +1171,9 @@ class DPEngineCoreProc(EngineCoreProc):
             )
 
         self.dp_rank = dp_rank
+        logger.info("[DP Init] Initializing DP process group...")
         self.dp_group = vllm_config.parallel_config.stateless_init_dp_group()
+        logger.info("[DP Init] DP process group initialized successfully")
 
     def shutdown(self):
         super().shutdown()
@@ -1337,6 +1344,11 @@ class DPEngineCoreActor(DPEngineCoreProc):
         dp_rank: int = 0,
         local_dp_rank: int = 0,
     ):
+        logger.info(
+            "[Actor Init] Starting DPEngineCoreActor initialization (dp_rank=%d, local_dp_rank=%d)",
+            dp_rank, local_dp_rank
+        )
+        
         self.addresses = addresses
         vllm_config.parallel_config.data_parallel_rank = dp_rank
         vllm_config.parallel_config.data_parallel_rank_local = local_dp_rank
@@ -1358,9 +1370,16 @@ class DPEngineCoreActor(DPEngineCoreProc):
         # https://github.com/ray-project/ray/pull/40461/files#diff-31e8159767361e4bc259b6d9883d9c0d5e5db780fcea4a52ead4ee3ee4a59a78R1860 # noqa: E501
         # and get_accelerator_ids_for_accelerator_resource() in worker.py
         # of ray.
+        logger.info("[Actor Init] Setting visible devices...")
         self._set_visible_devices(vllm_config, local_dp_rank)
-
+        
+        logger.info("[Actor Init] Calling parent __init__...")
         super().__init__(vllm_config, local_client, "", executor_class, log_stats)
+        
+        logger.info(
+            "[Actor Init] DPEngineCoreActor initialization completed (dp_rank=%d)",
+            dp_rank
+        )
 
     def _set_visible_devices(self, vllm_config: VllmConfig, local_dp_rank: int):
         from vllm.platforms import current_platform
