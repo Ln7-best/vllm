@@ -18,6 +18,10 @@ from torch.distributed import (
     get_global_rank,
 )
 
+from vllm.logger import init_logger
+
+logger = init_logger(__name__)
+
 
 def idx_local_to_global(
     local_idx: int,
@@ -112,6 +116,22 @@ def shuffle_layer(
     """
     Perform expert weights rearrangement of one layer.
     """
+    from vllm.distributed.parallel_state import get_ep_group
+    
+    current_ep_group = get_ep_group()
+    ep_world_size = current_ep_group.world_size
+    logger.info(
+        "[shuffle_layer] (rank %d) ENTRY - ep_world_size=%d, num_local_experts=%d",
+        ep_rank, ep_world_size, num_local_experts
+    )
+    logger.info(
+        "[shuffle_layer] (rank %d) old_indices length=%d, first 10: %s", 
+        ep_rank, len(old_indices), old_indices[:10] if len(old_indices) > 10 else old_indices
+    )
+    logger.info(
+        "[shuffle_layer] (rank %d) new_indices length=%d, first 10: %s", 
+        ep_rank, len(new_indices), new_indices[:10] if len(new_indices) > 10 else new_indices
+    )
     local2global = partial(
         idx_local_to_global,
         local_cnt=num_local_experts,
@@ -123,9 +143,11 @@ def shuffle_layer(
         old_indices[local2global(i)] == new_indices[local2global(i)]
         for i in range(num_local_experts)
     ]
+    logger.info("[shuffle_layer] (rank %d) Unchanged experts: %s", ep_rank, is_unchanged)
 
     # 1. Perform weight copy inside the local rank.
     is_received_locally = is_unchanged[:]
+    logger.info("[shuffle_layer] (rank %d) Starting local weight copy...", ep_rank)
     for src in range(num_local_experts):
         src_global = local2global(src)
         for dst in range(num_local_experts):
@@ -139,9 +161,13 @@ def shuffle_layer(
                 for weight, buffer in zip(expert_weights, expert_weights_buffer):
                     buffer[dst].copy_(weight[src])
 
+    logger.info("[shuffle_layer] (rank %d) Local copy completed, is_received_locally: %s", 
+               ep_rank, is_received_locally)
+
     p2p_ops: list[P2POp] = []
 
     # 2. Initiate sending of weights.
+    logger.info("[shuffle_layer] (rank %d) Starting P2P send preparation...", ep_rank)
     experts_send_loc: dict[int, int] = {}
     for src in range(num_local_experts):
         expert = old_indices[local2global(src)]
@@ -150,6 +176,8 @@ def shuffle_layer(
         if expert in experts_send_loc:
             continue
         experts_send_loc[expert] = src
+    
+    logger.info("[shuffle_layer] (rank %d) experts_send_loc: %s", ep_rank, experts_send_loc)
 
     # We need to sort here to match send/recv
     for expert, src in sorted(experts_send_loc.items()):
@@ -185,6 +213,7 @@ def shuffle_layer(
             ]
 
     # 3. Initiate receiving of weights.
+    logger.info("[shuffle_layer] (rank %d) Starting P2P recv preparation...", ep_rank)
     experts_recv_loc: dict[int, int] = {}
     for dst in range(num_local_experts):
         if is_received_locally[dst]:
@@ -195,6 +224,8 @@ def shuffle_layer(
         if expert in experts_recv_loc:
             continue
         experts_recv_loc[expert] = dst
+    
+    logger.info("[shuffle_layer] (rank %d) experts_recv_loc: %s", ep_rank, experts_recv_loc)
 
     # We need to sort here to match send/recv
     for expert, dst in sorted(experts_recv_loc.items()):
@@ -225,18 +256,49 @@ def shuffle_layer(
         ]
 
     # 4. Execute the P2P operations. The real communication happens here.
+    logger.info("[shuffle_layer] (rank %d) Prepared %d P2P operations", ep_rank, len(p2p_ops))
+    
     if p2p_ops:
-        reqs = batch_isend_irecv(p2p_ops)
-        for req in reqs:
-            req.wait()
+        logger.info("[shuffle_layer] (rank %d) P2P operations summary:", ep_rank)
+        send_count = recv_count = 0
+        for i, op in enumerate(p2p_ops):
+            if "send" in str(type(op.op)).lower():
+                send_count += 1
+                logger.info("[shuffle_layer] (rank %d) P2P op[%d]: SEND to rank %d", ep_rank, i, op.peer)
+            else:
+                recv_count += 1
+                logger.info("[shuffle_layer] (rank %d) P2P op[%d]: RECV from rank %d", ep_rank, i, op.peer)
+        
+        logger.info("[shuffle_layer] (rank %d) Total: %d sends, %d recvs", ep_rank, send_count, recv_count)
+        logger.info("[shuffle_layer] (rank %d) About to call batch_isend_irecv...", ep_rank)
+        
+        try:
+            reqs = batch_isend_irecv(p2p_ops)
+            logger.info("[shuffle_layer] (rank %d) batch_isend_irecv returned %d requests, waiting...", 
+                       ep_rank, len(reqs))
+            
+            for i, req in enumerate(reqs):
+                logger.info("[shuffle_layer] (rank %d) Waiting for request %d/%d...", ep_rank, i+1, len(reqs))
+                req.wait()
+                logger.info("[shuffle_layer] (rank %d) Request %d/%d completed", ep_rank, i+1, len(reqs))
+            
+            logger.info("[shuffle_layer] (rank %d) All P2P operations completed successfully!", ep_rank)
+        except Exception as e:
+            logger.error("[shuffle_layer] (rank %d) P2P operation failed: %s", ep_rank, str(e))
+            raise
+    else:
+        logger.info("[shuffle_layer] (rank %d) No P2P operations needed", ep_rank)
 
     # 5. Copy the weights from the buffer back to the original weights.
+    logger.info("[shuffle_layer] (rank %d) Starting final weight copy...", ep_rank)
+    copy_count = 0
     for dst in range(num_local_experts):
         if is_unchanged[dst]:
             continue
         if is_received_locally[dst]:
             for weight, buffer in zip(expert_weights, expert_weights_buffer):
                 weight[dst].copy_(buffer[dst])
+            copy_count += 1
         else:
             expert = new_indices[local2global(dst)]
             if expert == -1:
@@ -244,6 +306,10 @@ def shuffle_layer(
             src = experts_recv_loc[expert]
             for weight, buffer in zip(expert_weights, expert_weights_buffer):
                 weight[dst].copy_(buffer[src])
+            copy_count += 1
+    
+    logger.info("[shuffle_layer] (rank %d) shuffle_layer completed successfully, copied %d experts", 
+               ep_rank, copy_count)
 
 
 def rearrange_expert_weights_inplace(
