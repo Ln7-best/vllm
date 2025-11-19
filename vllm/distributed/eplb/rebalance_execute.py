@@ -600,6 +600,18 @@ def _map_old_expert_indices_with_rank_mapping(
         neg_ones_count, len(sample_layer), sample_layer[:20].tolist() if len(sample_layer) > 0 else []
     )
 
+    # CRITICAL: Print the full return result to confirm -1 filling
+    logger.info("[_map_old_expert_indices] *** RETURN RESULT ***")
+    logger.info("[_map_old_expert_indices] Full shape: %s", mapped_expert_indices.shape)
+    for layer_idx in range(min(3, mapped_expert_indices.shape[0])):  # Show first 3 layers
+        layer_data = mapped_expert_indices[layer_idx]
+        neg_ones_in_layer = (layer_data == -1).sum().item()
+        logger.info(
+            "[_map_old_expert_indices] Layer %d: -1_count=%d/%d, values=%s", 
+            layer_idx, neg_ones_in_layer, len(layer_data), layer_data.tolist()
+        )
+    logger.info("[_map_old_expert_indices] *** END RETURN RESULT ***")
+
     return mapped_expert_indices
 
 
