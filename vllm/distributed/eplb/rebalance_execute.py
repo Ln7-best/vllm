@@ -250,19 +250,28 @@ def shuffle_layer(
     world_size = torch.distributed.get_world_size()
     logger.info(f"[Global Rank {global_rank}]")
     
-    # Fix: Ensure correct device mapping for distributed environment
+    # Fix: Use ep_rank directly as device ID to handle Ray GPU allocation
     assert torch.cuda.is_available(), "CUDA must be available for P2P operations"
     
-    # Calculate correct local device based on ep_rank and available GPUs
-    num_gpus = torch.cuda.device_count()
-    local_device_id = ep_rank % num_gpus
+    # In Ray distributed environment, each Actor may only see 1 GPU
+    # Use ep_rank directly as the device ID since Ray handles GPU allocation
+    num_visible_gpus = torch.cuda.device_count()
     
-    # Set the device explicitly to ensure proper GPU allocation
-    torch.cuda.set_device(local_device_id)
-    current_device = torch.cuda.current_device()
-    device = torch.device(f'cuda:{current_device}')
+    # Try using ep_rank as device ID first (common in distributed setups)
+    try:
+        torch.cuda.set_device(ep_rank)
+        current_device = torch.cuda.current_device()
+        device = torch.device(f'cuda:{current_device}')
+        device_strategy = "ep_rank_direct"
+    except RuntimeError:
+        # Fallback: use modulo if ep_rank exceeds visible GPU count
+        local_device_id = ep_rank % max(1, num_visible_gpus)
+        torch.cuda.set_device(local_device_id)
+        current_device = torch.cuda.current_device()
+        device = torch.device(f'cuda:{current_device}')
+        device_strategy = "modulo_fallback"
     
-    logger.info(f"[Rank {ep_rank}] Fixed device mapping: {device} (global_rank: {global_rank}, ep_rank: {ep_rank}, local_device: {current_device}, calculated_device: {local_device_id}, num_gpus: {num_gpus})")
+    logger.info(f"[Rank {ep_rank}] Device allocation: {device} (global_rank: {global_rank}, ep_rank: {ep_rank}, current_device: {current_device}, visible_gpus: {num_visible_gpus}, strategy: {device_strategy})")
 
     dummy_p2p_ops = []
     tensor_to_hold = None  # 用于延长 tensor 生命周期
