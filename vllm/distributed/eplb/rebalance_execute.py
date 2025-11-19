@@ -229,123 +229,34 @@ def shuffle_layer(
         ]
 
     # 4. Execute the P2P operations. The real communication happens here.
-    # CRITICAL: ALL ranks must participate in batch_isend_irecv if it's the first collective call
-    # PyTorch docs: "all ranks of the group must participate in this API call; otherwise, the behavior is undefined"
     
-    # Force all ranks to call batch_isend_irecv, even if they have no P2P operations
-    if True:  # Always call batch_isend_irecv, regardless of p2p_ops
-        # P2P diagnosis logging
-        send_count = recv_count = 0
-        for i, op in enumerate(p2p_ops):
-            op_name = op.op.__name__ if hasattr(op.op, '__name__') else 'unknown'
-            if op_name == 'isend':
-                send_count += 1
-                logger.info("[shuffle_layer] (rank %d) P2P op[%d]: SEND to rank %d", ep_rank, i, op.peer)
-            elif op_name == 'irecv':
-                recv_count += 1
-                logger.info("[shuffle_layer] (rank %d) P2P op[%d]: RECV from rank %d", ep_rank, i, op.peer)
+    # === SIMPLE P2P TEST ===
+    dummy_p2p_ops = []
+    
+    if ep_group.size() >= 2 and ep_rank < 2:
+        device = torch.cuda.current_device() if torch.cuda.is_available() else torch.device('cpu')
         
-        logger.info("[shuffle_layer] (rank %d) Total: %d sends, %d recvs", ep_rank, send_count, recv_count)
-        
-        # CRITICAL: Deep diagnosis before batch_isend_irecv
-        logger.info("[shuffle_layer] (rank %d) === BATCH_ISEND_IRECV DIAGNOSIS ===", ep_rank)
-        logger.info("[shuffle_layer] (rank %d) Process group size: %d, rank: %d", ep_rank, ep_group.size(), ep_group.rank())
-        
-        # Check tensor info for each operation
-        for i, op in enumerate(p2p_ops):
-            tensor = op.tensor
-            logger.info("[shuffle_layer] (rank %d) P2P[%d]: shape=%s, device=%s, dtype=%s, peer=%d", 
-                       ep_rank, i, tensor.shape, tensor.device, tensor.dtype, op.peer)
-        
-        # CRITICAL: Set current GPU device for NCCL PG backend
-        # PyTorch docs: "batch_isend_irecv with NCCL PG backend requires torch.cuda.set_device"
-        if torch.cuda.is_available():
-            current_device = torch.cuda.current_device()
-            torch.cuda.set_device(current_device)
-            torch.cuda.synchronize()
-            logger.info("[shuffle_layer] (rank %d) GPU device set to %d and synchronized", ep_rank, current_device)
-        
-        # Check if we're waiting for other processes
-        logger.info("[shuffle_layer] (rank %d) About to call batch_isend_irecv with %d operations...", ep_rank, len(p2p_ops))
-        
-        # Execute with timing and timeout detection
-        import time
-        import threading
-        start_time = time.time()
-        logger.info("[shuffle_layer] (rank %d) CALLING batch_isend_irecv at timestamp %.6f", ep_rank, start_time)
-        
-        # More reliable timeout mechanism using threading.Timer
-        timeout_occurred = threading.Event()
-        
-        def timeout_handler():
-            timeout_occurred.set()
-            logger.error("[shuffle_layer] (rank %d) batch_isend_irecv TIMEOUT after 10 seconds! Switching to fallback...", ep_rank)
-        
-        timer = threading.Timer(10.0, timeout_handler)  # 10 second timeout (shorter for faster testing)
-        timer.start()
-        
-        try:
-            if timeout_occurred.is_set():
-                raise TimeoutError("batch_isend_irecv timed out")
-            
-            reqs = batch_isend_irecv(p2p_ops)
-            timer.cancel()  # Cancel timeout if successful
-            
-            if timeout_occurred.is_set():
-                raise TimeoutError("batch_isend_irecv timed out during execution")
-                
-        except (TimeoutError, Exception) as e:
-            timer.cancel()
-            if timeout_occurred.is_set():
-                logger.error("[shuffle_layer] (rank %d) batch_isend_irecv TIMEOUT! Switching to synchronous P2P fallback...", ep_rank)
-            else:
-                logger.error("[shuffle_layer] (rank %d) batch_isend_irecv ERROR: %s. Switching to fallback...", ep_rank, str(e))
-            
-            # FALLBACK: Use synchronous send/recv instead
-            logger.info("[shuffle_layer] (rank %d) Starting synchronous P2P operations...", ep_rank)
-            
-            for i, op in enumerate(p2p_ops):
-                op_name = op.op.__name__ if hasattr(op.op, '__name__') else 'unknown'
-                if op_name == 'isend':
-                    logger.info("[shuffle_layer] (rank %d) Fallback SEND[%d] to rank %d - STARTING", ep_rank, i, op.peer)
-                    torch.distributed.send(op.tensor, op.peer, group=ep_group)
-                    logger.info("[shuffle_layer] (rank %d) Fallback SEND[%d] to rank %d - COMPLETED", ep_rank, i, op.peer)
-                elif op_name == 'irecv':
-                    logger.info("[shuffle_layer] (rank %d) Fallback RECV[%d] from rank %d - STARTING", ep_rank, i, op.peer)
-                    torch.distributed.recv(op.tensor, op.peer, group=ep_group)
-                    logger.info("[shuffle_layer] (rank %d) Fallback RECV[%d] from rank %d - COMPLETED", ep_rank, i, op.peer)
-            
-            logger.info("[shuffle_layer] (rank %d) Synchronous P2P fallback completed successfully!", ep_rank)
-            reqs = []  # No requests to wait for in sync mode
-        except Exception as e:
-            signal.alarm(0)
-            logger.error("[shuffle_layer] (rank %d) batch_isend_irecv FAILED: %s", ep_rank, str(e))
-            raise
-        call_time = time.time() - start_time
-        logger.info("[shuffle_layer] (rank %d) batch_isend_irecv returned in %.3fs, waiting for %d requests...", 
-                   ep_rank, call_time, len(reqs))
-        
-        for i, req in enumerate(reqs):
+        if ep_rank == 0:
+            # Rank 0 sends to rank 1
+            tensor = torch.ones(10, dtype=torch.float32, device=device) * 123.0
+            dummy_p2p_ops.append(P2POp(torch.distributed.isend, tensor, get_global_rank(ep_group, 1)))
+        elif ep_rank == 4:
+            # Rank 1 receives from rank 0
+            tensor = torch.zeros(10, dtype=torch.float32, device=device)
+            dummy_p2p_ops.append(P2POp(torch.distributed.irecv, tensor, get_global_rank(ep_group, 0)))
+    
+    if dummy_p2p_ops:
+        logger.info(f"[Rank {ep_rank}] Testing batch_isend_irecv...")
+        reqs = batch_isend_irecv(dummy_p2p_ops)
+        for req in reqs:
             req.wait()
-            logger.info("[shuffle_layer] (rank %d) Request %d/%d completed", ep_rank, i+1, len(reqs))
-        
-        logger.info("[shuffle_layer] (rank %d) All P2P operations completed successfully!", ep_rank)
-    else:
-        logger.info("[shuffle_layer] (rank %d) No P2P operations, but must participate in batch_isend_irecv", ep_rank)
-        
-        # CRITICAL: Even ranks with no P2P ops must call batch_isend_irecv for collective behavior
-        # Set GPU device (required for NCCL PG backend)
-        if torch.cuda.is_available():
-            current_device = torch.cuda.current_device()
-            torch.cuda.set_device(current_device)
-            torch.cuda.synchronize()
-            logger.info("[shuffle_layer] (rank %d) GPU device set to %d for empty batch_isend_irecv", ep_rank, current_device)
-        
-        # Call batch_isend_irecv with empty p2p_ops list
-        logger.info("[shuffle_layer] (rank %d) Calling batch_isend_irecv with empty operations...", ep_rank)
-        reqs = batch_isend_irecv([])  # Empty list but still participate
-        logger.info("[shuffle_layer] (rank %d) batch_isend_irecv completed with %d requests", ep_rank, len(reqs))
-
+        logger.info(f"[Rank {ep_rank}] ✅ P2P test completed")
+    
+    # Skip real operations for now
+    # if p2p_ops:
+    #     reqs = batch_isend_irecv(p2p_ops)
+    #     for req in reqs:
+    #         req.wait()
 
     # 5. Copy the weights from the buffer back to the original weights.
     for dst in range(num_local_experts):

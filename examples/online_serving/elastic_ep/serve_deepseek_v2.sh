@@ -63,6 +63,13 @@ export NCCL_DEBUG=INFO
 export NCCL_DEBUG_SUBSYS=ALL
 export NCCL_DEBUG_FILE=/tmp/nccl_debug.log
 
+# Single-machine NCCL optimization - Force local communication only
+export NCCL_P2P_LEVEL=NVL          # Use NVLink for P2P when available
+export NCCL_NET_GDR_LEVEL=0        # Disable GPU Direct RDMA (not needed for single machine)
+export NCCL_IB_DISABLE=1           # Disable InfiniBand (single machine doesn't need it)
+export NCCL_SOCKET_IFNAME=lo       # Force localhost interface
+export NCCL_IGNORE_CPU_AFFINITY=1  # Ignore CPU affinity for single machine
+
 vllm serve $MODEL_NAME \
     --data-parallel-size $DATA_PARALLEL_SIZE \
     --data-parallel-size-local $DATA_PARALLEL_SIZE \
