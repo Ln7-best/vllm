@@ -256,15 +256,17 @@ def shuffle_layer(
         expected_device = ep_rank % torch.cuda.device_count()
         assert device == expected_device, f"Device mismatch: expected device {expected_device} for rank {ep_rank}, but got device {device}" if torch.cuda.is_available() else torch.device('cpu')
         torch.cuda.set_device(device)
+        global_rank_0 = get_global_rank(ep_group, 0)  # 组内 rank 0 的全局 rank
+        global_rank_1 = get_global_rank(ep_group, 1) 
         if ep_rank == 0:
             # Rank 0 sends to rank 1
             tensor = torch.ones(10, dtype=torch.float32, device=device) * 123.0
-            dummy_p2p_ops.append(P2POp(torch.distributed.isend, tensor, 1))
+            dummy_p2p_ops.append(P2POp(torch.distributed.isend, tensor, global_rank_1))
             logger.info(f"[Rank 0] Created dummy send to rank 1")
         elif ep_rank == 1:
             # Rank 1 receives from rank 0
             tensor = torch.zeros(10, dtype=torch.float32, device=device)
-            dummy_p2p_ops.append(P2POp(torch.distributed.irecv, tensor,  0))
+            dummy_p2p_ops.append(P2POp(torch.distributed.irecv, tensor,  global_rank_0))
             logger.info(f"[Rank 1] Created dummy recv from rank 0")
     
     if dummy_p2p_ops:
