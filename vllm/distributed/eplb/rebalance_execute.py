@@ -273,20 +273,30 @@ def rearrange_expert_weights_inplace(
             communications to reserve enough memory for the buffers.
         rank_mapping: A dictionary mapping old rank to new rank.
     """
+    import logging
+    logger = logging.getLogger(__name__)
+    
+    ep_rank = ep_group.rank()
+    logger.info("[Expert Weights] (rank %d) Starting rearrange_expert_weights_inplace...", ep_rank)
+    
     if rank_mapping is not None:
+        logger.info("[Expert Weights] (rank %d) Processing rank_mapping: %s", ep_rank, rank_mapping)
         if len(rank_mapping) == ep_group.size():
             # scale down
+            logger.info("[Expert Weights] (rank %d) Scale down: mapping new expert indices", ep_rank)
             new_global_expert_indices = _map_new_expert_indices_with_rank_mapping(
                 new_global_expert_indices,
                 rank_mapping,
             )
         else:
             # scale up
+            logger.info("[Expert Weights] (rank %d) Scale up: mapping old expert indices", ep_rank)
             old_global_expert_indices = _map_old_expert_indices_with_rank_mapping(
                 old_global_expert_indices,
                 rank_mapping,
                 ep_group.size(),
             )
+        logger.info("[Expert Weights] (rank %d) Rank mapping completed", ep_rank)
 
     assert old_global_expert_indices.shape[1] == new_global_expert_indices.shape[1]
 
@@ -296,16 +306,20 @@ def rearrange_expert_weights_inplace(
     num_local_physical_experts = next(iter(expert_weights[0])).shape[0]
     assert new_global_expert_indices.shape == (num_moe_layers, num_physical_experts)
 
-    ep_rank = ep_group.rank()
     ep_size = ep_group.size()
     assert num_physical_experts == ep_size * num_local_physical_experts
+    
+    logger.info("[Expert Weights] (rank %d) Parameters: num_moe_layers=%d, num_physical_experts=%d, num_local_physical_experts=%d", 
+               ep_rank, num_moe_layers, num_physical_experts, num_local_physical_experts)
 
     # A buffer to hold the expert weights in one layer during the exchange.
     # NOTE: Currently we assume the same weights across different layers
     # have the same shape.
+    logger.info("[Expert Weights] (rank %d) Creating expert weights buffer...", ep_rank)
     expert_weights_buffer = [torch.empty_like(w) for w in expert_weights[0]]
 
     if is_profile:
+        logger.info("[Expert Weights] (rank %d) Profile mode: performing dummy communications", ep_rank)
         # Maximum send size is to send all local experts to all ranks,
         # So we use a dummy `all_gather` to reserve enough communication buffer
         for weight, buffer in zip(expert_weights[0], expert_weights_buffer):
@@ -319,16 +333,22 @@ def rearrange_expert_weights_inplace(
                 weight,
                 group=ep_group,
             )
+        logger.info("[Expert Weights] (rank %d) Profile mode completed", ep_rank)
         return
 
+    logger.info("[Expert Weights] (rank %d) Converting indices to CPU...", ep_rank)
     old_global_expert_indices_cpu = old_global_expert_indices.cpu()
     new_global_expert_indices_cpu = new_global_expert_indices.cpu()
 
     # NOTE(bowen): We need this synchronize to run, but I don't know why.
     # If you figure out the reason, please let me know -- thank you!
+    logger.info("[Expert Weights] (rank %d) Calling torch.cuda.synchronize()...", ep_rank)
     torch.cuda.synchronize()
+    logger.info("[Expert Weights] (rank %d) torch.cuda.synchronize() completed", ep_rank)
 
+    logger.info("[Expert Weights] (rank %d) Starting layer-by-layer shuffling (%d layers)...", ep_rank, num_moe_layers)
     for layer in range(num_moe_layers):
+        logger.info("[Expert Weights] (rank %d) Shuffling layer %d/%d...", ep_rank, layer + 1, num_moe_layers)
         shuffle_layer(
             num_local_physical_experts,
             ep_rank,
@@ -338,6 +358,9 @@ def rearrange_expert_weights_inplace(
             expert_weights_buffer,
             ep_group,
         )
+        logger.info("[Expert Weights] (rank %d) Layer %d/%d shuffling completed", ep_rank, layer + 1, num_moe_layers)
+    
+    logger.info("[Expert Weights] (rank %d) rearrange_expert_weights_inplace completed successfully!", ep_rank)
 
 
 def _map_old_expert_indices_with_rank_mapping(
