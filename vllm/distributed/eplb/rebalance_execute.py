@@ -246,35 +246,54 @@ def shuffle_layer(
     #         dummy_p2p_ops.append(P2POp(torch.distributed.irecv, tensor,  0))
     
     # === DUMMY P2P TEST: rank 0 and 1 only ===
+    global_rank = torch.dist.get_rank()
+    world_size = torch.dist.get_world_size()
+
+    # 显式设置当前进程使用的 GPU（推荐做法）
+    torch.cuda.set_device(global_rank)
+    device = torch.device(f'cuda:{global_rank}')
+
     dummy_p2p_ops = []
-    
+    tensor_to_hold = None  # 用于延长 tensor 生命周期
+
+    # 只在 ep_group 至少有 2 个进程、且当前是组内前两个 rank 时执行 P2P
     if ep_group.size() >= 2 and ep_rank < 2:
-        assert torch.cuda.is_available(), "CUDA must be available for P2P operations"
-        device = torch.cuda.current_device()
-        assert device != torch.device('cpu'), f"Device should not be CPU, got device: {device}"
-        # Ensure device matches the expected device for this rank
-        expected_device = ep_rank % torch.cuda.device_count()
-        assert device == expected_device, f"Device mismatch: expected device {expected_device} for rank {ep_rank}, but got device {device}" if torch.cuda.is_available() else torch.device('cpu')
-        torch.cuda.set_device(device)
-        global_rank_0 = get_global_rank(ep_group, 0)  # 组内 rank 0 的全局 rank
-        global_rank_1 = get_global_rank(ep_group, 1) 
+        # 获取组内 rank 0 和 1 对应的全局 rank
+        global_peer = get_global_rank(ep_group, 1 - ep_rank)  # 对方的全局 rank
+
         if ep_rank == 0:
-            # Rank 0 sends to rank 1
-            tensor = torch.ones(10, dtype=torch.float32, device=device) * 123.0
-            dummy_p2p_ops.append(P2POp(torch.distributed.isend, tensor, global_rank_1))
-            logger.info(f"[Rank 0] Created dummy send to rank 1")
+            # Rank 0: 发送
+            send_tensor = torch.ones(10, dtype=torch.float32, device=device) * 123.0
+            dummy_p2p_ops.append(P2POp(torch.dist.isend, send_tensor, peer=global_peer))
+            tensor_to_hold = send_tensor  # 防止 tensor 被提前回收
+            logger.info(f"[Global Rank {global_rank}] Sending to global peer {global_peer}")
+
         elif ep_rank == 1:
-            # Rank 1 receives from rank 0
-            tensor = torch.zeros(10, dtype=torch.float32, device=device)
-            dummy_p2p_ops.append(P2POp(torch.distributed.irecv, tensor,  global_rank_0))
-            logger.info(f"[Rank 1] Created dummy recv from rank 0")
-    
+            # Rank 1: 接收
+            recv_tensor = torch.zeros(10, dtype=torch.float32, device=device)
+            dummy_p2p_ops.append(P2POp(torch.dist.irecv, recv_tensor, peer=global_peer))
+            tensor_to_hold = recv_tensor  # 保持引用直到 wait()
+            logger.info(f"[Global Rank {global_rank}] Receiving from global peer {global_peer}")
+
+    # 执行批量通信
     if dummy_p2p_ops:
-        logger.info(f"[Rank {ep_rank}] Testing batch_isend_irecv...")
-        reqs = batch_isend_irecv(dummy_p2p_ops)
-        for req in reqs:
-            req.wait()
-        logger.info(f"[Rank {ep_rank}] ✅ Dummy test completed")
+        logger.info(f"[Global Rank {global_rank}] Launching batch_isend_irecv...")
+        work_handles = batch_isend_irecv(dummy_p2p_ops)
+        
+        # 等待所有通信完成
+        for work in work_handles:
+            work.wait()
+        
+        # 可选：验证接收结果（仅 rank 1）
+        if ep_rank == 1:
+            expected = torch.full_like(tensor_to_hold, 123.0)
+            if torch.allclose(tensor_to_hold, expected):
+                logger.info(f"[Global Rank {global_rank}] ✅ Received correct data: {tensor_to_hold[0].item()}")
+            else:
+                logger.error(f"[Global Rank {global_rank}] ❌ Data mismatch!")
+                raise RuntimeError("P2P communication test failed!")
+
+        logger.info(f"[Global Rank {global_rank}] ✅ Dummy P2P test completed successfully.")
     
     # Skip real operations
     # if p2p_ops:
