@@ -246,7 +246,7 @@ def shuffle_layer(
                 logger.info("[shuffle_layer] (rank %d) STEP2: Creating SEND operation to rank %d (global %d) for expert %d", 
                            ep_rank, dst, dst_global, expert)
             
-            p2p_ops += [
+            new_ops = [
                 P2POp(
                     torch.distributed.isend,  # This should be SEND!
                     weight[src],
@@ -254,6 +254,17 @@ def shuffle_layer(
                 )
                 for weight in expert_weights
             ]
+            
+            # CRITICAL: Verify P2POp contents immediately after creation
+            if ep_rank == 0 and log_this_layer:
+                for i, op in enumerate(new_ops):
+                    op_type_str = str(type(op.op))
+                    logger.info("[shuffle_layer] (rank %d) STEP2: P2POp[%d] created - op_type=%s, peer=%d", 
+                               ep_rank, i, op_type_str, op.peer)
+                    logger.info("[shuffle_layer] (rank %d) STEP2: P2POp[%d] op function: %s", 
+                               ep_rank, i, op.op.__name__ if hasattr(op.op, '__name__') else 'UNKNOWN')
+            
+            p2p_ops += new_ops
 
     # 3. Initiate receiving of weights.
     if log_this_layer:
