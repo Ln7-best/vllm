@@ -8,6 +8,7 @@ import os
 import sys
 import time
 import argparse
+import datetime
 import torch
 import torch.distributed as dist
 from torch.distributed import P2POp
@@ -29,7 +30,7 @@ def setup_distributed(rank, world_size, master_addr="localhost", master_port=295
         init_method=f"tcp://{master_addr}:{master_port}",
         rank=rank,
         world_size=world_size,
-        timeout=30  # 30秒超时
+        timeout=datetime.timedelta(seconds=30)  # 30秒超时
     )
     
     # 设置CUDA设备 - 关键修复点！
