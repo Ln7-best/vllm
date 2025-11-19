@@ -1354,6 +1354,9 @@ class DPEngineCoreProc(EngineCoreProc):
         self.model_executor.reinitialize_distributed(reconfig_request)
         logger.info("[Reconfig] Model executor reinitialized")
         
+        logger.info("[Reconfig] Checking scale up condition: new_dp_size=%d, old_dp_size=%d, condition=%s", 
+                   reconfig_request.new_data_parallel_size, old_dp_size, 
+                   reconfig_request.new_data_parallel_size > old_dp_size)
         if reconfig_request.new_data_parallel_size > old_dp_size:
             logger.info("[Reconfig] Scale up detected, syncing KV cache memory...")
             assert self.available_gpu_memory_for_kv_cache > 0

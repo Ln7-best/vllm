@@ -666,17 +666,23 @@ class Worker(WorkerBase):
     ) -> None:
         from vllm.distributed.parallel_state import get_ep_group
 
-        if get_ep_group().rank == 0:
-            logger.info("[Elastic EP] Starting expert resharding after scaling up...")
+        ep_rank = get_ep_group().rank
+        logger.info("[Elastic EP] (rank %d) Starting expert resharding after scaling up...", ep_rank)
+        logger.info("[Elastic EP] (rank %d) old_ep_size=%d, new_ep_size=%d, global_expert_loads=%s", 
+                   ep_rank, old_ep_size, new_ep_size, 
+                   "None" if global_expert_loads is None else f"list of {len(global_expert_loads)} tensors")
+        
         rank_mapping = {old_ep_rank: old_ep_rank for old_ep_rank in range(old_ep_size)}
+        logger.info("[Elastic EP] (rank %d) rank_mapping=%s", ep_rank, rank_mapping)
+        
         assert self.model_runner.eplb_state is not None
+        logger.info("[Elastic EP] (rank %d) Calling eplb_state.rearrange (execute_shuffle=True)...", ep_rank)
         self.model_runner.eplb_state.rearrange(
             execute_shuffle=True,
             global_expert_loads=global_expert_loads,
             rank_mapping=rank_mapping,
         )
-        if get_ep_group().rank == 0:
-            logger.info("[Elastic EP] Expert resharding completed!")
+        logger.info("[Elastic EP] (rank %d) Expert resharding completed!", ep_rank)
 
     def _reconfigure_parallel_config(
         self, reconfig_request: ReconfigureDistributedRequest
@@ -724,6 +730,9 @@ class Worker(WorkerBase):
             FusedMoEParallelConfig,
         )
 
+        logger.info("[MoE Reconfig] Starting _reconfigure_moe (old_ep_size=%d, new_ep_size=%d)", 
+                   old_ep_size, new_ep_size)
+        
         parallel_config = self.vllm_config.parallel_config
 
         def get_moe_modules(model: torch.nn.Module) -> list[FusedMoE]:
@@ -752,24 +761,33 @@ class Worker(WorkerBase):
                 module.moe_config.moe_parallel_config = module.moe_parallel_config
             return moe_modules
 
+        logger.info("[MoE Reconfig] Getting MoE modules from model...")
         model_moe_modules = get_moe_modules(self.model_runner.model)
         num_local_experts = model_moe_modules[0].moe_config.num_local_experts
+        logger.info("[MoE Reconfig] Found %d MoE modules, num_local_experts=%d", 
+                   len(model_moe_modules), num_local_experts)
 
+        logger.info("[MoE Reconfig] Updating model MoE modules...")
         update_moe_modules(model_moe_modules, num_local_experts)
+        logger.info("[MoE Reconfig] Model MoE modules updated")
+        
         drafter_model = None
         if hasattr(self.model_runner, "drafter") and hasattr(
             self.model_runner.drafter, "model"
         ):
             drafter_model = self.model_runner.drafter.model
         if drafter_model is not None and is_mixture_of_experts(drafter_model):
+            logger.info("[MoE Reconfig] Updating drafter MoE modules...")
             drafter_moe_modules = get_moe_modules(drafter_model)
             # Check if drafter and model have matching configs
             assert (
                 drafter_moe_modules[0].moe_config.num_local_experts == num_local_experts
             ), "Drafter and model configs should be the same"
             update_moe_modules(drafter_moe_modules, num_local_experts)
+            logger.info("[MoE Reconfig] Drafter MoE modules updated")
 
         if new_ep_size < old_ep_size:
+            logger.info("[MoE Reconfig] Scale down path: calculating physical experts...")
             num_local_physical_experts = num_local_experts
             assert self.model_runner.eplb_state is not None
             # new_physical_experts = (
@@ -782,29 +800,47 @@ class Worker(WorkerBase):
                 - eplb_model_state.logical_replica_count.shape[1]
             )
             global_expert_loads = None
+            logger.info("[MoE Reconfig] Scale down: num_local_physical_experts=%d, new_physical_experts=%d", 
+                       num_local_physical_experts, new_physical_experts)
         else:
+            logger.info("[MoE Reconfig] Scale up path: broadcasting num_local_experts...")
             num_local_physical_experts = torch.tensor(
                 [num_local_experts], dtype=torch.int32, device="cpu"
             )
+            logger.info("[MoE Reconfig] Calling torch.distributed.broadcast (this will block)...")
             torch.distributed.broadcast(
                 num_local_physical_experts, group=get_ep_group().cpu_group, group_src=0
             )
+            logger.info("[MoE Reconfig] Broadcast completed")
             num_local_physical_experts = num_local_physical_experts.item()
             new_physical_experts = num_local_physical_experts * new_ep_size
+            logger.info("[MoE Reconfig] num_local_physical_experts=%d, new_physical_experts=%d", 
+                       num_local_physical_experts, new_physical_experts)
+            
             assert self.model_runner.eplb_state is not None
+            logger.info("[MoE Reconfig] Calling eplb_state.rearrange (execute_shuffle=False)...")
             global_expert_loads = self.model_runner.eplb_state.rearrange(
                 execute_shuffle=False
             )
+            logger.info("[MoE Reconfig] eplb_state.rearrange completed, got %d expert load tensors", 
+                       len(global_expert_loads))
             parallel_config.eplb_config.num_redundant_experts = (
                 new_physical_experts - global_expert_loads[0].shape[1]
             )
+        
+        logger.info("[MoE Reconfig] Preparing communication buffers...")
         prepare_communication_buffer_for_model(self.model_runner.model)
         if drafter_model is not None:
             prepare_communication_buffer_for_model(drafter_model)
+        logger.info("[MoE Reconfig] Communication buffers prepared")
+        
+        logger.info("[MoE Reconfig] Updating physical experts metadata...")
         self.model_runner.model.update_physical_experts_metadata(
             num_physical_experts=new_physical_experts,
             num_local_physical_experts=num_local_physical_experts,
         )
+        logger.info("[MoE Reconfig] Physical experts metadata updated")
+        logger.info("[MoE Reconfig] _reconfigure_moe completed")
         return global_expert_loads
 
     def reinitialize_distributed(
@@ -847,6 +883,7 @@ class Worker(WorkerBase):
             )
 
         global_expert_loads = self._reconfigure_moe(old_ep_size, new_ep_size)
+        
 
         if new_ep_size > old_ep_size:
             assert global_expert_loads is not None
