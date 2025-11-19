@@ -210,6 +210,11 @@ def shuffle_layer(
             old_indices,
             new_indices,
         )
+        
+        # CRITICAL: Debug get_ep_ranks_with_expert results for rank 0
+        if ep_rank == 0 and log_this_layer:
+            logger.info("[shuffle_layer] (rank %d) Expert %d SEND: senders=%s, receivers=%s", 
+                       ep_rank, expert, ranks_to_send, ranks_to_recv)
 
         # Calculate the ranks to send by this rank
         num_dst_per_sender = len(ranks_to_recv) // len(ranks_to_send)
@@ -224,11 +229,26 @@ def shuffle_layer(
         if recver_pos < len(ranks_to_recv):
             recv_ranks.append(ranks_to_recv[recver_pos])
 
+        # CRITICAL DEBUG: Track P2P operation creation in Step 2
+        if ep_rank == 0 and log_this_layer:
+            logger.info("[shuffle_layer] (rank %d) Expert %d SEND calculation:", ep_rank, expert)
+            logger.info("[shuffle_layer] (rank %d) - num_dst_per_sender=%d (receivers=%d / senders=%d)", 
+                       ep_rank, num_dst_per_sender, len(ranks_to_recv), len(ranks_to_send))
+            logger.info("[shuffle_layer] (rank %d) - sender_pos=%d, recv_begin=%d, recv_end=%d", 
+                       ep_rank, sender_pos, recv_begin, recv_end)
+            logger.info("[shuffle_layer] (rank %d) - recv_ranks=%s (targets to SEND to)", ep_rank, recv_ranks)
+
         for dst in recv_ranks:
             dst_global = get_global_rank(ep_group, dst)
+            
+            # CRITICAL: Verify we're creating SEND operations
+            if ep_rank == 0 and log_this_layer:
+                logger.info("[shuffle_layer] (rank %d) STEP2: Creating SEND operation to rank %d (global %d) for expert %d", 
+                           ep_rank, dst, dst_global, expert)
+            
             p2p_ops += [
                 P2POp(
-                    torch.distributed.isend,
+                    torch.distributed.isend,  # This should be SEND!
                     weight[src],
                     dst_global,
                 )
