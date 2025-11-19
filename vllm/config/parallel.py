@@ -353,16 +353,31 @@ class ParallelConfig:
 
         max_retries = 5
         last_exc: Exception | None = None
-        for _ in range(max_retries):
+        for attempt in range(max_retries):
             try:
-                # use gloo since the engine process might not have cuda device
-                return stateless_init_torch_distributed_process_group(
+                port = self.get_next_dp_init_port()
+                logger.info(
+                    "[DP Group Init Debug] Rank %d attempting to init DP group: master=%s:%d, world_size=%d, attempt=%d/%d",
+                    self.data_parallel_rank,
                     self.data_parallel_master_ip,
-                    self.get_next_dp_init_port(),
+                    port,
+                    self.data_parallel_size,
+                    attempt + 1,
+                    max_retries
+                )
+                # use gloo since the engine process might not have cuda device
+                result = stateless_init_torch_distributed_process_group(
+                    self.data_parallel_master_ip,
+                    port,
                     self.data_parallel_rank,
                     self.data_parallel_size,
                     backend=current_platform.dist_backend,
                 )
+                logger.info(
+                    "[DP Group Init Debug] Rank %d successfully initialized DP group",
+                    self.data_parallel_rank
+                )
+                return result
             except DistNetworkError as e:
                 # We only want to retry when the root cause is EADDRINUSE.
                 if "EADDRINUSE" in str(e):

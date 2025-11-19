@@ -491,13 +491,27 @@ def stateless_init_torch_distributed_process_group(
     always formed with process 1, 2, ..., 8, and the additional communication
     channel is formed with process 9 and 10.
     """
+    import time
     init_method = get_tcp_uri(host, port)
     backend = Backend(backend)  # it is basically string
     timeout = _get_default_timeout(backend)
 
+    logger.info(
+        "[Rendezvous Debug] Rank %d entering rendezvous: init_method=%s, world_size=%d, timeout=%s",
+        rank, init_method, world_size, timeout
+    )
+    start_time = time.time()
+    
     store, rank, world_size = next(
         rendezvous(init_method, rank, world_size, timeout=timeout)
     )
+    
+    elapsed = time.time() - start_time
+    logger.info(
+        "[Rendezvous Debug] Rank %d completed rendezvous after %.2f seconds",
+        rank, elapsed
+    )
+    
     store.set_timeout(timeout)
 
     group_rank = rank
