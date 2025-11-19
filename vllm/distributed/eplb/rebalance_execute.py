@@ -239,11 +239,11 @@ def shuffle_layer(
         if ep_rank == 0:
             # Rank 0 sends to rank 1
             tensor = torch.ones(10, dtype=torch.float32, device=device) * 123.0
-            dummy_p2p_ops.append(P2POp(torch.distributed.isend, tensor, get_global_rank(ep_group, 4)))
+            dummy_p2p_ops.append(P2POp(torch.distributed.isend, tensor, 4))
         elif ep_rank == 4:
             # Rank 1 receives from rank 0
             tensor = torch.zeros(10, dtype=torch.float32, device=device)
-            dummy_p2p_ops.append(P2POp(torch.distributed.irecv, tensor, get_global_rank(ep_group, 0)))
+            dummy_p2p_ops.append(P2POp(torch.distributed.irecv, tensor,  0))
     
     # === DUMMY P2P TEST: rank 0 and 1 only ===
     dummy_p2p_ops = []
@@ -254,12 +254,12 @@ def shuffle_layer(
         if ep_rank == 0:
             # Rank 0 sends to rank 1
             tensor = torch.ones(10, dtype=torch.float32, device=device) * 123.0
-            dummy_p2p_ops.append(P2POp(torch.distributed.isend, tensor, get_global_rank(ep_group, 1)))
+            dummy_p2p_ops.append(P2POp(torch.distributed.isend, tensor, 1))
             logger.info(f"[Rank 0] Created dummy send to rank 1")
         elif ep_rank == 1:
             # Rank 1 receives from rank 0
             tensor = torch.zeros(10, dtype=torch.float32, device=device)
-            dummy_p2p_ops.append(P2POp(torch.distributed.irecv, tensor, get_global_rank(ep_group, 0)))
+            dummy_p2p_ops.append(P2POp(torch.distributed.irecv, tensor,  0))
             logger.info(f"[Rank 1] Created dummy recv from rank 0")
     
     if dummy_p2p_ops:
