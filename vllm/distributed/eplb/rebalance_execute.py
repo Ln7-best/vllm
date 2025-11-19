@@ -302,14 +302,18 @@ def shuffle_layer(
                 logger.error("[shuffle_layer] (rank %d) batch_isend_irecv ERROR: %s. Switching to fallback...", ep_rank, str(e))
             
             # FALLBACK: Use synchronous send/recv instead
+            logger.info("[shuffle_layer] (rank %d) Starting synchronous P2P operations...", ep_rank)
+            
             for i, op in enumerate(p2p_ops):
                 op_name = op.op.__name__ if hasattr(op.op, '__name__') else 'unknown'
                 if op_name == 'isend':
-                    logger.info("[shuffle_layer] (rank %d) Fallback SEND[%d] to rank %d", ep_rank, i, op.peer)
+                    logger.info("[shuffle_layer] (rank %d) Fallback SEND[%d] to rank %d - STARTING", ep_rank, i, op.peer)
                     torch.distributed.send(op.tensor, op.peer, group=ep_group)
+                    logger.info("[shuffle_layer] (rank %d) Fallback SEND[%d] to rank %d - COMPLETED", ep_rank, i, op.peer)
                 elif op_name == 'irecv':
-                    logger.info("[shuffle_layer] (rank %d) Fallback RECV[%d] from rank %d", ep_rank, i, op.peer)
+                    logger.info("[shuffle_layer] (rank %d) Fallback RECV[%d] from rank %d - STARTING", ep_rank, i, op.peer)
                     torch.distributed.recv(op.tensor, op.peer, group=ep_group)
+                    logger.info("[shuffle_layer] (rank %d) Fallback RECV[%d] from rank %d - COMPLETED", ep_rank, i, op.peer)
             
             logger.info("[shuffle_layer] (rank %d) Synchronous P2P fallback completed successfully!", ep_rank)
             reqs = []  # No requests to wait for in sync mode
