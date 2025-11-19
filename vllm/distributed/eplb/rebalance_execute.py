@@ -117,16 +117,42 @@ def shuffle_layer(
     Perform expert weights rearrangement of one layer.
     """
     from vllm.distributed.parallel_state import get_ep_group
+    import traceback
+    
+    # ===== SOURCE TRACKING: Record call stack and parameter origins (LAYER 0 ONLY) =====
+    # Use a global counter to track layer calls and only log for the first layer
+    if not hasattr(shuffle_layer, '_layer_call_count'):
+        shuffle_layer._layer_call_count = {}
+    
+    rank_key = f"rank_{ep_rank}"
+    if rank_key not in shuffle_layer._layer_call_count:
+        shuffle_layer._layer_call_count[rank_key] = 0
+        
+        logger.error("[shuffle_layer] (rank %d) === OLD_INDICES SOURCE TRACKING (LAYER 0) ===", ep_rank)
+        logger.error("[shuffle_layer] (rank %d) Call stack:", ep_rank)
+        stack = traceback.format_stack()
+        for i, frame in enumerate(stack[-4:-1]):  # Show last 3 call frames
+            logger.error("[shuffle_layer] (rank %d) Stack[%d]: %s", ep_rank, i, frame.strip())
+        
+        logger.error("[shuffle_layer] (rank %d) old_indices received:", ep_rank)
+        logger.error("[shuffle_layer] (rank %d) - Type: %s", ep_rank, type(old_indices))
+        logger.error("[shuffle_layer] (rank %d) - Length: %d", ep_rank, len(old_indices))
+        logger.error("[shuffle_layer] (rank %d) - ID: %s", ep_rank, id(old_indices))
+        logger.error("[shuffle_layer] (rank %d) - First 20: %s", ep_rank, list(old_indices[:20]))
+        logger.error("[shuffle_layer] (rank %d) - Last 20: %s", ep_rank, list(old_indices[-20:]))
+        logger.error("[shuffle_layer] (rank %d) - All unique values: %s", ep_rank, sorted(list(set(old_indices))))
+        logger.error("[shuffle_layer] (rank %d) === END SOURCE TRACKING ===", ep_rank)
+    else:
+        logger.info("[shuffle_layer] (rank %d) Layer %d: old_indices unique values: %s", 
+                   ep_rank, shuffle_layer._layer_call_count[rank_key], sorted(list(set(old_indices[:10]))))
+    
+    shuffle_layer._layer_call_count[rank_key] += 1
     
     current_ep_group = get_ep_group()
     ep_world_size = current_ep_group.world_size
     logger.info(
         "[shuffle_layer] (rank %d) ENTRY - ep_world_size=%d, num_local_experts=%d",
         ep_rank, ep_world_size, num_local_experts
-    )
-    logger.info(
-        "[shuffle_layer] (rank %d) old_indices length=%d, first 10: %s", 
-        ep_rank, len(old_indices), old_indices[:10] if len(old_indices) > 10 else old_indices
     )
     logger.info(
         "[shuffle_layer] (rank %d) new_indices length=%d, first 10: %s", 
@@ -229,20 +255,15 @@ def shuffle_layer(
 
     # We need to sort here to match send/recv
     for expert, dst in sorted(experts_recv_loc.items()):
-        logger.info("[shuffle_layer] (rank %d) ===== DEBUGGING EXPERT %d =====", ep_rank, expert)
-        
-        # DIAGNOSTIC 1: Check global index arrays for this expert
-        logger.info("[shuffle_layer] (rank %d) Expert %d - Searching in old_indices (len=%d):", 
-                   ep_rank, expert, len(old_indices))
+        # SIMPLIFIED DIAGNOSTIC: Focus on key data
         old_expert_positions = [i for i, exp_id in enumerate(old_indices) if exp_id == expert]
-        logger.info("[shuffle_layer] (rank %d) Expert %d found at positions in old_indices: %s", 
-                   ep_rank, expert, old_expert_positions[:20])  # Show first 20 positions
+        logger.info("[shuffle_layer] (rank %d) Expert %d: old_positions=%s", 
+                   ep_rank, expert, old_expert_positions[:5] if old_expert_positions else "NONE")
         
-        logger.info("[shuffle_layer] (rank %d) Expert %d - Searching in new_indices (len=%d):", 
-                   ep_rank, expert, len(new_indices))
-        new_expert_positions = [i for i, exp_id in enumerate(new_indices) if exp_id == expert]
-        logger.info("[shuffle_layer] (rank %d) Expert %d found at positions in new_indices: %s", 
-                   ep_rank, expert, new_expert_positions[:20])
+        # KEY: Track old_indices source and content
+        if not old_expert_positions:  # Only log details if expert is missing
+            logger.error("[shuffle_layer] (rank %d) Expert %d missing! old_indices sample: first=%s, last=%s", 
+                        ep_rank, expert, old_indices[:10], old_indices[-10:])
         
         ranks_to_send, ranks_to_recv = get_ep_ranks_with_expert(
             expert,
@@ -251,10 +272,8 @@ def shuffle_layer(
             new_indices,
         )
         
-        # DIAGNOSTIC 2: Analyze get_ep_ranks_with_expert results
-        logger.info("[shuffle_layer] (rank %d) Expert %d - get_ep_ranks_with_expert results:", ep_rank, expert)
-        logger.info("[shuffle_layer] (rank %d) Expert %d - ranks_to_send: %s", ep_rank, expert, ranks_to_send)
-        logger.info("[shuffle_layer] (rank %d) Expert %d - ranks_to_recv: %s", ep_rank, expert, ranks_to_recv)
+        logger.info("[shuffle_layer] (rank %d) Expert %d: senders=%s, receivers=%s", 
+                   ep_rank, expert, ranks_to_send, ranks_to_recv)
 
         # **BUG FIX**: Handle edge case where no ranks need to send this expert
         # This can happen with new engines in elastic scale up where old_indices are all -1
@@ -262,43 +281,19 @@ def shuffle_layer(
             logger.error("[shuffle_layer] (rank %d) ⚠️  CRITICAL: Expert %d has no senders!", ep_rank, expert)
             logger.error("[shuffle_layer] (rank %d) This means NO existing rank has expert %d in their old_indices", ep_rank, expert)
             
-            # DIAGNOSTIC 3: Deep dive into rank expert distribution
-            logger.error("[shuffle_layer] (rank %d) === RANK EXPERT DISTRIBUTION ANALYSIS ===", ep_rank)
-            for rank in range(5):  # Check all 5 ranks (0,1,2,3,4)
+            # SIMPLIFIED ANALYSIS: Check each rank's experts
+            logger.error("[shuffle_layer] (rank %d) old_indices per rank:", ep_rank)
+            for rank in range(5):
                 start_pos = rank * num_local_experts
                 end_pos = start_pos + num_local_experts
                 if start_pos < len(old_indices):
-                    rank_old_experts = old_indices[start_pos:end_pos]
-                    unique_old_experts = sorted(list(set(rank_old_experts)))
-                    expert_in_rank = expert in rank_old_experts
-                    logger.error("[shuffle_layer] (rank %d) Rank %d old experts (pos %d-%d): %s [HAS_EXPERT_%d: %s]", 
-                                ep_rank, rank, start_pos, end_pos-1, 
-                                unique_old_experts[:10], expert, expert_in_rank)
-                else:
-                    logger.error("[shuffle_layer] (rank %d) Rank %d: OUT OF RANGE (start_pos=%d >= len=%d)", 
-                                ep_rank, rank, start_pos, len(old_indices))
+                    rank_slice = old_indices[start_pos:end_pos]
+                    unique_experts = sorted(list(set(rank_slice)))
+                    logger.error("[shuffle_layer] (rank %d) Rank %d: %s", ep_rank, rank, unique_experts[:5])
             
-            # DIAGNOSTIC 4: Expert distribution summary
-            logger.error("[shuffle_layer] (rank %d) Expert %d distribution in old_indices:", ep_rank, expert)
-            expert_count_by_rank = {}
-            for i, exp_id in enumerate(old_indices):
-                if exp_id == expert:
-                    rank_owner = i // num_local_experts
-                    expert_count_by_rank[rank_owner] = expert_count_by_rank.get(rank_owner, 0) + 1
-            logger.error("[shuffle_layer] (rank %d) Expert %d count by rank: %s (total_positions: %d)", 
-                        ep_rank, expert, expert_count_by_rank, len(old_expert_positions))
-            
-            # DIAGNOSTIC 5: Sample old_indices content around expert positions
-            if old_expert_positions:
-                logger.error("[shuffle_layer] (rank %d) Sample old_indices around expert %d positions:", ep_rank, expert)
-                for pos in old_expert_positions[:5]:  # Show first 5 positions
-                    start_sample = max(0, pos - 2)
-                    end_sample = min(len(old_indices), pos + 3)
-                    sample = old_indices[start_sample:end_sample]
-                    logger.error("[shuffle_layer] (rank %d) old_indices[%d:%d] = %s (expert %d at pos %d)", 
-                                ep_rank, start_sample, end_sample, sample, expert, pos)
-            
-            logger.error("[shuffle_layer] (rank %d) === END ANALYSIS ===", ep_rank)
+            # CRITICAL: Show problematic old_indices array source
+            logger.error("[shuffle_layer] (rank %d) old_indices trace: len=%d, all_same=%s", 
+                        ep_rank, len(old_indices), len(set(old_indices)) == 1)
             # Skip this expert - it cannot be received if no one is sending it
             continue
         
@@ -409,6 +404,18 @@ def rearrange_expert_weights_inplace(
     logger = logging.getLogger(__name__)
     
     ep_rank = ep_group.rank()
+    
+    # ===== UPSTREAM SOURCE TRACKING: Record old_global_expert_indices origin =====
+    logger.error("[Expert Weights] (rank %d) === old_global_expert_indices UPSTREAM TRACKING ===", ep_rank)
+    logger.error("[Expert Weights] (rank %d) old_global_expert_indices received as parameter:", ep_rank)
+    logger.error("[Expert Weights] (rank %d) - Type: %s", ep_rank, type(old_global_expert_indices))
+    logger.error("[Expert Weights] (rank %d) - Shape: %s", ep_rank, old_global_expert_indices.shape)
+    logger.error("[Expert Weights] (rank %d) - Device: %s", ep_rank, old_global_expert_indices.device)
+    logger.error("[Expert Weights] (rank %d) - ID: %s", ep_rank, id(old_global_expert_indices))
+    logger.error("[Expert Weights] (rank %d) - Full content: %s", ep_rank, old_global_expert_indices.tolist())
+    logger.error("[Expert Weights] (rank %d) - All unique values: %s", ep_rank, torch.unique(old_global_expert_indices).tolist())
+    logger.error("[Expert Weights] (rank %d) === END UPSTREAM TRACKING ===", ep_rank)
+    
     logger.info("[Expert Weights] (rank %d) Starting rearrange_expert_weights_inplace...", ep_rank)
     
     if rank_mapping is not None:
