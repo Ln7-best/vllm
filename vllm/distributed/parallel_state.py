@@ -1188,7 +1188,7 @@ def init_distributed_environment(
         #
         # Original code (kept for reference):
         # port = parallel_config.master_port
-        port = parallel_config.data_parallel_master_port
+        port = parallel_config.data_parallel_master_port + 1
         distributed_init_method = get_distributed_init_method(ip, port)
     elif (
         config is not None
