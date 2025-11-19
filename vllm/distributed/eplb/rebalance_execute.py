@@ -248,7 +248,7 @@ def shuffle_layer(
     # === DUMMY P2P TEST: rank 0 and 1 only ===
     global_rank = torch.distributed.get_rank()
     world_size = torch.distributed.get_world_size()
-
+    logger.info(f"[Global Rank {global_rank}]")
     # 显式设置当前进程使用的 GPU（推荐做法）
     torch.cuda.set_device(global_rank)
     device = torch.device(f'cuda:{global_rank}')
