@@ -89,6 +89,13 @@ class EngineCore:
 
         load_general_plugins()
 
+        # 检测是否为新engine
+        is_new_engine = os.environ.get("VLLM_ELASTIC_EP_SCALE_UP_LAUNCH") == "1"
+        logger.info(
+            "[EngineCore Init] Starting EngineCore initialization (is_new_engine=%s, dp_rank=%d)",
+            is_new_engine, vllm_config.parallel_config.data_parallel_rank
+        )
+
         self.vllm_config = vllm_config
         if vllm_config.parallel_config.data_parallel_rank == 0:
             logger.info(
@@ -100,16 +107,20 @@ class EngineCore:
         self.log_stats = log_stats
 
         # Setup Model.
+        logger.info("[EngineCore Init] Creating model executor...")
         self.model_executor = executor_class(vllm_config)
         if executor_fail_callback is not None:
             self.model_executor.register_failure_callback(executor_fail_callback)
+        logger.info("[EngineCore Init] Model executor created successfully")
 
         self.available_gpu_memory_for_kv_cache = -1
 
         # Setup KV Caches and update CacheConfig after profiling.
+        logger.info("[EngineCore Init] Starting KV cache initialization...")
         num_gpu_blocks, num_cpu_blocks, kv_cache_config = self._initialize_kv_caches(
             vllm_config
         )
+        logger.info("[EngineCore Init] KV cache initialization completed")
 
         vllm_config.cache_config.num_gpu_blocks = num_gpu_blocks
         vllm_config.cache_config.num_cpu_blocks = num_cpu_blocks

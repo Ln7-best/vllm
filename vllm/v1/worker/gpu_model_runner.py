@@ -3136,7 +3136,8 @@ class GPUModelRunner(
         )
 
         if is_mixture_of_experts(self.model) and self.parallel_config.enable_eplb:
-            logger.info_once("EPLB is enabled for model %s.", self.model_config.model)
+            is_new_engine = os.environ.get("VLLM_ELASTIC_EP_SCALE_UP_LAUNCH") == "1"
+            logger.info("[Model Load] EPLB is enabled for model %s (is_new_engine=%s).", self.model_config.model, is_new_engine)
             global_expert_load = (
                 global_expert_loads[eplb_models] if global_expert_loads else None
             )
@@ -3145,7 +3146,13 @@ class GPUModelRunner(
                 if old_global_expert_indices_per_model
                 else None
             )
+            logger.info(
+                "[Model Load] EPLB add_model with global_expert_load=%s, old_indices=%s",
+                "None" if global_expert_load is None else f"tensor{global_expert_load.shape}",
+                "None" if old_global_expert_indices is None else f"tensor{old_global_expert_indices.shape}"
+            )
             assert self.eplb_state is not None
+            logger.info("[Model Load] Calling eplb_state.add_model...")
             self.eplb_state.add_model(
                 self.model,
                 self.model_config,
@@ -3153,6 +3160,7 @@ class GPUModelRunner(
                 old_global_expert_indices,
                 rank_mapping,
             )
+            logger.info("[Model Load] eplb_state.add_model completed")
 
         if (
             self.vllm_config.compilation_config.mode

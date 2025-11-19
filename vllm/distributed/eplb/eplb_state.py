@@ -238,6 +238,17 @@ class EplbState:
         """
         Build the initial EPLB state.
         """
+        ep_rank = get_ep_group().rank
+        is_new_engine = os.environ.get("VLLM_ELASTIC_EP_SCALE_UP_LAUNCH") == "1"
+        logger.info(
+            "[EPLB add_model] Starting add_model (rank=%d, is_new_engine=%s)",
+            ep_rank, is_new_engine
+        )
+        logger.info(
+            "[EPLB add_model] Model info: num_routed_experts=%d, num_physical_experts=%d, num_logical_experts=%d",
+            model.num_routed_experts, model.num_physical_experts, model.num_logical_experts
+        )
+        
         self.validate_ep_configuration(model)
         physical_to_logical_map_list = (
             EplbState.build_initial_global_physical_to_logical_map(
@@ -325,6 +336,10 @@ class EplbState:
         self.expert_rearrangement_step_interval = eplb_step_interval
 
         if global_expert_load is not None:
+            logger.info(
+                "[EPLB add_model] Using provided global_expert_load with shape %s",
+                global_expert_load.shape
+            )
             ep_group = get_ep_group().device_group
             assert global_expert_load.shape == (
                 model.num_moe_layers,
@@ -346,6 +361,7 @@ class EplbState:
                 )
 
             # Get new expert mappings
+            logger.info("[EPLB add_model] Calling rebalance_experts (with provided global_expert_load)...")
             (
                 new_physical_to_logical_map,
                 new_logical_to_physical_map,
@@ -357,6 +373,7 @@ class EplbState:
                 num_nodes,
                 num_gpus,
             )
+            logger.info("[EPLB add_model] rebalance_experts completed")
 
             max_physical_slots = new_logical_to_physical_map.shape[-1]
             assert max_physical_slots <= logical_to_physical_map.shape[-1]
@@ -369,12 +386,16 @@ class EplbState:
             logical_to_physical_map.copy_(new_logical_to_physical_map)
             logical_replica_count.copy_(new_logical_replica_count)
 
+        logger.info("[EPLB add_model] Setting EPLB state on model...")
         model.set_eplb_state(
             expert_load_pass,
             logical_to_physical_map,
             logical_replica_count,
         )
+        logger.info("[EPLB add_model] Model EPLB state set successfully")
+        
         if global_expert_load is not None:
+            logger.info("[EPLB add_model] Calling rearrange_expert_weights_inplace (new engine receives state)...")
             rearrange_expert_weights_inplace(
                 old_global_expert_indices,
                 new_physical_to_logical_map,
@@ -383,8 +404,12 @@ class EplbState:
                 False,
                 rank_mapping,
             )
+            logger.info("[EPLB add_model] rearrange_expert_weights_inplace completed")
             self.expert_rearrangement_step = 0
+        else:
+            logger.info("[EPLB add_model] No global_expert_load provided, skipping weight rearrangement")
 
+        logger.info("[EPLB add_model] Creating EplbModelState...")
         self.model_states[model_config.compute_hash()] = EplbModelState(
             physical_to_logical_map,
             logical_to_physical_map,
@@ -394,6 +419,7 @@ class EplbState:
             model_config.model,
             model,
         )
+        logger.info("[EPLB add_model] add_model completed successfully")
 
     def step(
         self,

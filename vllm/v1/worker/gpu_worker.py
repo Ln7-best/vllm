@@ -71,6 +71,13 @@ class Worker(WorkerBase):
         distributed_init_method: str,
         is_driver_worker: bool = False,
     ):
+        # 检测是否为新engine并添加日志
+        is_new_engine = os.environ.get("VLLM_ELASTIC_EP_SCALE_UP_LAUNCH") == "1"
+        logger.info(
+            "[GPUWorker Init] Starting GPUWorker initialization (is_new_engine=%s, rank=%d, local_rank=%d)",
+            is_new_engine, rank, local_rank
+        )
+        
         super().__init__(
             vllm_config=vllm_config,
             local_rank=local_rank,
@@ -78,12 +85,15 @@ class Worker(WorkerBase):
             distributed_init_method=distributed_init_method,
             is_driver_worker=is_driver_worker,
         )
+        logger.info("[GPUWorker Init] WorkerBase initialization completed")
 
         if self.model_config.trust_remote_code:
             # note: lazy import to avoid importing torch before initializing
             from vllm.utils.import_utils import init_cached_hf_modules
 
+            logger.info("[GPUWorker Init] Initializing cached HF modules...")
             init_cached_hf_modules()
+            logger.info("[GPUWorker Init] Cached HF modules initialized")
 
         # Buffers saved before sleep
         self._sleep_saved_buffers: dict[str, torch.Tensor] = {}
@@ -259,20 +269,28 @@ class Worker(WorkerBase):
             raise RuntimeError(f"Not support device type: {self.device_config.device}")
 
         # Construct the model runner
+        logger.info("[GPUWorker Init] Creating GPUModelRunner...")
         self.model_runner: GPUModelRunner = GPUModelRunner(
             self.vllm_config, self.device
         )
+        logger.info("[GPUWorker Init] GPUModelRunner created successfully")
 
         if self.rank == 0:
             # If usage stat is enabled, collect relevant info.
+            logger.info("[GPUWorker Init] Reporting usage stats...")
             report_usage_stats(self.vllm_config)
+            
+        logger.info("[GPUWorker Init] GPUWorker initialization completed successfully")
 
     # FIXME(youkaichao & ywang96): Use TorchDispatchMode instead of memory pool
     # to hijack tensor allocation.
     def load_model(self) -> None:
         eep_scale_up = os.environ.get("VLLM_ELASTIC_EP_SCALE_UP_LAUNCH") == "1"
+        logger.info("[GPUWorker Load] Starting model loading (eep_scale_up=%s)", eep_scale_up)
         with self._maybe_get_memory_pool_context(tag="weights"):
+            logger.info("[GPUWorker Load] Calling model_runner.load_model...")
             self.model_runner.load_model(eep_scale_up=eep_scale_up)
+            logger.info("[GPUWorker Load] Model loading completed successfully")
 
     def update_config(self, overrides: dict[str, Any]) -> None:
         self.model_runner.update_config(overrides)
