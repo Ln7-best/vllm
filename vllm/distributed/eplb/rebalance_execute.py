@@ -426,15 +426,15 @@ def rearrange_expert_weights_inplace(
     ep_rank = ep_group.rank()
     
     # ===== UPSTREAM SOURCE TRACKING: Record old_global_expert_indices origin =====
-    logger.error("[Expert Weights] (rank %d) === old_global_expert_indices UPSTREAM TRACKING ===", ep_rank)
-    logger.error("[Expert Weights] (rank %d) old_global_expert_indices received as parameter:", ep_rank)
-    logger.error("[Expert Weights] (rank %d) - Type: %s", ep_rank, type(old_global_expert_indices))
-    logger.error("[Expert Weights] (rank %d) - Shape: %s", ep_rank, old_global_expert_indices.shape)
-    logger.error("[Expert Weights] (rank %d) - Device: %s", ep_rank, old_global_expert_indices.device)
-    logger.error("[Expert Weights] (rank %d) - ID: %s", ep_rank, id(old_global_expert_indices))
-    logger.error("[Expert Weights] (rank %d) - Full content: %s", ep_rank, old_global_expert_indices.tolist())
-    logger.error("[Expert Weights] (rank %d) - All unique values: %s", ep_rank, torch.unique(old_global_expert_indices).tolist())
-    logger.error("[Expert Weights] (rank %d) === END UPSTREAM TRACKING ===", ep_rank)
+    # logger.error("[Expert Weights] (rank %d) === old_global_expert_indices UPSTREAM TRACKING ===", ep_rank)
+    # logger.error("[Expert Weights] (rank %d) old_global_expert_indices received as parameter:", ep_rank)
+    # logger.error("[Expert Weights] (rank %d) - Type: %s", ep_rank, type(old_global_expert_indices))
+    # logger.error("[Expert Weights] (rank %d) - Shape: %s", ep_rank, old_global_expert_indices.shape)
+    # logger.error("[Expert Weights] (rank %d) - Device: %s", ep_rank, old_global_expert_indices.device)
+    # logger.error("[Expert Weights] (rank %d) - ID: %s", ep_rank, id(old_global_expert_indices))
+    # logger.error("[Expert Weights] (rank %d) - Full content: %s", ep_rank, old_global_expert_indices.tolist())
+    # logger.error("[Expert Weights] (rank %d) - All unique values: %s", ep_rank, torch.unique(old_global_expert_indices).tolist())
+    # logger.error("[Expert Weights] (rank %d) === END UPSTREAM TRACKING ===", ep_rank)
     
     logger.info("[Expert Weights] (rank %d) Starting rearrange_expert_weights_inplace...", ep_rank)
     
