@@ -3092,6 +3092,19 @@ class GPUModelRunner(
                         if old_global_expert_indices_per_model
                         else None
                     )
+                    
+                    # **CRITICAL BUG FIX**: Check if this is a new engine in elastic scale up
+                    # New engines don't have any existing expert weights, so their old_global_expert_indices
+                    # should be all -1, not the same as existing engines. This prevents P2P communication
+                    # deadlocks where ranks wait for each other to send/receive but coordination is wrong.
+                    is_new_engine = os.environ.get("VLLM_ELASTIC_EP_SCALE_UP_LAUNCH") == "1"
+                    if is_new_engine and old_global_expert_indices is not None:
+                        logger.info("[DRAFTER FIX] New engine detected - overriding old_global_expert_indices to -1 (shape=%s)", old_global_expert_indices.shape)
+                        # Create tensor with same shape but filled with -1 to indicate no old experts
+                        import torch
+                        old_global_expert_indices = torch.full_like(old_global_expert_indices, -1)
+                        logger.info("[DRAFTER FIX] old_global_expert_indices corrected for new engine")
+                    
                     if self.eplb_state is None:
                         self.eplb_state = EplbState(self.parallel_config, self.device)
                     self.eplb_state.add_model(
@@ -3147,10 +3160,30 @@ class GPUModelRunner(
                 if old_global_expert_indices_per_model
                 else None
             )
+            
+            # **CRITICAL BUG FIX**: New engines in elastic scale up scenario
+            # Problem: New engines were getting the same old_global_expert_indices as existing engines,
+            # causing P2P communication deadlock during expert weight shuffling.
+            # 
+            # Root Cause: In scale up, new engines (rank 4) don't have any existing expert weights,
+            # but they were told they have experts [0,1,2,3,4,5,6,7,8,9,...] to send.
+            # Meanwhile, existing engines expected to receive from new engines, but new engines
+            # also expected to receive. This created a deadlock where both sides wait for recv
+            # but neither sends.
+            # 
+            # Solution: Override old_global_expert_indices to -1 for new engines to indicate
+            # they have no existing experts. This ensures correct P2P send/recv coordination.
+            if is_new_engine and old_global_expert_indices is not None:
+                logger.info("[MAIN MODEL FIX] New engine detected - overriding old_global_expert_indices to -1 (original shape=%s)", old_global_expert_indices.shape)
+                # Create tensor with same shape but filled with -1 to indicate no old experts
+                import torch
+                old_global_expert_indices = torch.full_like(old_global_expert_indices, -1)
+                logger.info("[MAIN MODEL FIX] old_global_expert_indices corrected for new engine: all values set to -1")
+            
             logger.info(
                 "[Model Load] EPLB add_model with global_expert_load=%s, old_indices=%s",
                 "None" if global_expert_load is None else f"tensor{global_expert_load.shape}",
-                "None" if old_global_expert_indices is None else f"tensor{old_global_expert_indices.shape}"
+                "None" if old_global_expert_indices is None else f"tensor{old_global_expert_indices.shape} (corrected for new engine)" if is_new_engine else f"tensor{old_global_expert_indices.shape}"
             )
             assert self.eplb_state is not None
             logger.info("[Model Load] Calling eplb_state.add_model...")
