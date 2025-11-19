@@ -233,7 +233,7 @@ def shuffle_layer(
     # === SIMPLE P2P TEST ===
     dummy_p2p_ops = []
     
-    if ep_group.size() >= 2 and ep_rank < 2:
+    if ep_group.size() >= 2 and ep_rank == 0 or ep_rank == 4:
         device = torch.cuda.current_device() if torch.cuda.is_available() else torch.device('cpu')
         
         if ep_rank == 0:
