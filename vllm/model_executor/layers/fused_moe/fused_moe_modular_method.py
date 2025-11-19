@@ -65,6 +65,14 @@ class FusedMoEModularMethod(FusedMoEMethodBase, CustomOp):
     def allow_inplace(self) -> bool:
         return self.old_quant_method.allow_inplace
 
+    def select_gemm_impl(
+        self,
+        prepare_finalize: FusedMoEPrepareAndFinalize,
+        layer: torch.nn.Module,
+    ):
+        # Delegate to the old_quant_method
+        return self.old_quant_method.select_gemm_impl(prepare_finalize, layer)
+
     def create_weights(
         self,
         layer: torch.nn.Module,
