@@ -915,6 +915,12 @@ class EngineCoreProc(EngineCore):
     ) -> None:
         """Dispatch request from client."""
 
+        logger.info(
+            "[Engine %d Message Debug] Received request type: %s",
+            getattr(self, 'dp_rank', -1),
+            request_type
+        )
+
         if request_type == EngineCoreRequestType.ADD:
             req, request_wave = request
             self.add_request(req, request_wave)
@@ -922,11 +928,22 @@ class EngineCoreProc(EngineCore):
             self.abort_requests(request)
         elif request_type == EngineCoreRequestType.UTILITY:
             client_idx, call_id, method_name, args = request
+            logger.info(
+                "[Engine %d Message Debug] Processing UTILITY request: method='%s', call_id=%d",
+                getattr(self, 'dp_rank', -1),
+                method_name,
+                call_id
+            )
             output = UtilityOutput(call_id)
             try:
                 method = getattr(self, method_name)
                 result = method(*self._convert_msgspec_args(method, args))
                 output.result = UtilityResult(result)
+                logger.info(
+                    "[Engine %d Message Debug] UTILITY method '%s' completed successfully",
+                    getattr(self, 'dp_rank', -1),
+                    method_name
+                )
             except BaseException as e:
                 logger.exception("Invocation of %s method failed", method_name)
                 output.failure_message = (

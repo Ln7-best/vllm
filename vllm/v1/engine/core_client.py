@@ -902,16 +902,41 @@ class AsyncMPClient(MPClient):
         objects is a reference to retain until zmq is finished with the
         buffers, in case they were extracted from tensors in the request.
         """
+        logger.info(
+            "[Send Message Debug] Preparing to send message to engine %s, message_type=%s, msg_parts=%d",
+            engine.hex() if isinstance(engine, bytes) else str(engine),
+            message[0] if message else "unknown",
+            len(message)
+        )
+        
         self.ensure_alive()
         self.free_pending_messages()
 
         msg = (engine,) + message
+        
+        logger.info(
+            "[Send Message Debug] Sending ZMQ multipart message: identity=%s, total_parts=%d, has_objects=%s",
+            engine.hex() if isinstance(engine, bytes) else str(engine),
+            len(msg),
+            bool(objects)
+        )
+        
         if not objects or len(msg) <= 3:
             # No auxiliary buffers => no tensor backing buffers in request.
-            return self.input_socket.send_multipart(msg, copy=False)
+            result = self.input_socket.send_multipart(msg, copy=False)
+            logger.info(
+                "[Send Message Debug] Message sent (no tracking) to engine %s",
+                engine.hex() if isinstance(engine, bytes) else str(engine)
+            )
+            return result
 
         future: asyncio.Future[zmq.MessageTracker]
         future = self.input_socket.send_multipart(msg, copy=False, track=True)
+        
+        logger.info(
+            "[Send Message Debug] Message sent (with tracking) to engine %s",
+            engine.hex() if isinstance(engine, bytes) else str(engine)
+        )
 
         def add_pending(f: asyncio.Future[zmq.MessageTracker]):
             with contextlib.suppress(BaseException):
@@ -933,8 +958,20 @@ class AsyncMPClient(MPClient):
             EngineCoreRequestType.UTILITY.value,
             *self.encoder.encode((self.client_index, call_id, method, args)),
         )
+        
+        logger.info(
+            "[Utility Call Debug] Calling utility method '%s' for engine %s, call_id=%d",
+            method, engine.hex() if isinstance(engine, bytes) else str(engine), call_id
+        )
+        
         await self._send_input_message(message, engine, args)
         self._ensure_output_queue_task()
+        
+        logger.info(
+            "[Utility Call Debug] Waiting for result of call_id=%d, method='%s'",
+            call_id, method
+        )
+        
         return await future
 
     async def get_supported_tasks_async(self) -> tuple[SupportedTask, ...]:
@@ -1286,11 +1323,31 @@ class DPLBAsyncMPClient(DPAsyncMPClient):
         and reconfiguring existing ones."""
         cur_data_parallel_size = len(self.core_engines)
 
+        # [DEBUG] Log initial state
+        logger.info(
+            "[Scale Up Debug] Starting scale up: current_size=%d, target_size=%d, core_engines_count=%d",
+            cur_data_parallel_size, new_data_parallel_size, len(self.core_engines)
+        )
+        logger.info(
+            "[Scale Up Debug] Engine identities: %s",
+            [engine.hex() for engine in self.core_engines]
+        )
+
         # Phase 1: Send reconfigure messages to all existing engines and wait
         # for them to be sent
         reconfig_futures = []
         self.vllm_config.parallel_config.data_parallel_master_port = get_open_port()
-        for engine in self.core_engines:
+        
+        logger.info(
+            "[Scale Up Debug] New DP master port: %d",
+            self.vllm_config.parallel_config.data_parallel_master_port
+        )
+        
+        for idx, engine in enumerate(self.core_engines):
+            logger.info(
+                "[Scale Up Debug] Preparing reconfigure for engine %d/%d, identity=%s",
+                idx + 1, len(self.core_engines), engine.hex()
+            )
             reconfig_request = ReconfigureDistributedRequest(
                 new_data_parallel_size=new_data_parallel_size,
                 new_data_parallel_rank=ReconfigureRankType.KEEP_CURRENT_RANK,
@@ -1301,9 +1358,17 @@ class DPLBAsyncMPClient(DPAsyncMPClient):
             coro = self._call_utility_async(
                 "reinitialize_distributed", reconfig_request, engine=engine
             )
-            reconfig_futures.append(asyncio.create_task(coro))
+            task = asyncio.create_task(coro)
+            reconfig_futures.append(task)
+            logger.info(
+                "[Scale Up Debug] Queued reconfigure task for engine %d/%d, identity=%s",
+                idx + 1, len(self.core_engines), engine.hex()
+            )
 
-        logger.info("All reconfigure messages sent, starting engine creation")
+        logger.info(
+            "[Scale Up Debug] All %d reconfigure messages queued, starting engine creation",
+            len(reconfig_futures)
+        )
 
         # Phase 2: Create new engines now that reconfig messages have been sent
         # self.resources.engine_manager is guaranteed to be
