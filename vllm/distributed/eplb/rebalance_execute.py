@@ -230,27 +230,32 @@ def shuffle_layer(
 
     # 4. Execute the P2P operations. The real communication happens here.
     
-    # === SIMPLE P2P TEST ===
-    dummy_p2p_ops = []
+    # # === SIMPLE P2P TEST ===
+    # dummy_p2p_ops = []
     
-    if ep_group.size() >= 2 and ep_rank == 0 or ep_rank == 4:
-        device = torch.cuda.current_device() if torch.cuda.is_available() else torch.device('cpu')
+    # if ep_group.size() >= 2 and ep_rank == 0 or ep_rank == 4:
+    #     device = torch.cuda.current_device() if torch.cuda.is_available() else torch.device('cpu')
         
-        if ep_rank == 0:
-            # Rank 0 sends to rank 1
-            tensor = torch.ones(10, dtype=torch.float32, device=device) * 123.0
-            dummy_p2p_ops.append(P2POp(torch.distributed.isend, tensor, 4))
-        elif ep_rank == 4:
-            # Rank 1 receives from rank 0
-            tensor = torch.zeros(10, dtype=torch.float32, device=device)
-            dummy_p2p_ops.append(P2POp(torch.distributed.irecv, tensor,  0))
+    #     if ep_rank == 0:
+    #         # Rank 0 sends to rank 1
+    #         tensor = torch.ones(10, dtype=torch.float32, device=device) * 123.0
+    #         dummy_p2p_ops.append(P2POp(torch.distributed.isend, tensor, 4))
+    #     elif ep_rank == 4:
+    #         # Rank 1 receives from rank 0
+    #         tensor = torch.zeros(10, dtype=torch.float32, device=device)
+    #         dummy_p2p_ops.append(P2POp(torch.distributed.irecv, tensor,  0))
     
     # === DUMMY P2P TEST: rank 0 and 1 only ===
     dummy_p2p_ops = []
     
     if ep_group.size() >= 2 and ep_rank < 2:
-        device = torch.cuda.current_device() if torch.cuda.is_available() else torch.device('cpu')
-        
+        assert torch.cuda.is_available(), "CUDA must be available for P2P operations"
+        device = torch.cuda.current_device()
+        assert device != torch.device('cpu'), f"Device should not be CPU, got device: {device}"
+        # Ensure device matches the expected device for this rank
+        expected_device = ep_rank % torch.cuda.device_count()
+        assert device == expected_device, f"Device mismatch: expected device {expected_device} for rank {ep_rank}, but got device {device}" if torch.cuda.is_available() else torch.device('cpu')
+        torch.cuda.set_device(device)
         if ep_rank == 0:
             # Rank 0 sends to rank 1
             tensor = torch.ones(10, dtype=torch.float32, device=device) * 123.0
