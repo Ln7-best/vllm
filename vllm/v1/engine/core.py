@@ -212,13 +212,17 @@ class EngineCore:
         kv_cache_specs = self.model_executor.get_kv_cache_specs()
 
         has_kv_cache = any(kv_cache_spec for kv_cache_spec in kv_cache_specs)
+        logger.info("[KV Cache Init] has_kv_cache=%s, kv_cache_specs length=%d", has_kv_cache, len(kv_cache_specs))
         if has_kv_cache:
             if os.environ.get("VLLM_ELASTIC_EP_SCALE_UP_LAUNCH") == "1":
+                logger.info("[KV Cache Init] Detected elastic scale up launch, will sync KV cache size")
                 dp_group = getattr(self, "dp_group", None)
                 assert dp_group is not None
+                logger.info("[KV Cache Init] Calling sync_kv_cache_memory_size with -1...")
                 self.available_gpu_memory_for_kv_cache = (
                     ParallelConfig.sync_kv_cache_memory_size(dp_group, -1)
                 )
+                logger.info("[KV Cache Init] sync_kv_cache_memory_size returned: %d", self.available_gpu_memory_for_kv_cache)
                 available_gpu_memory = [self.available_gpu_memory_for_kv_cache] * len(
                     kv_cache_specs
                 )
@@ -229,6 +233,7 @@ class EngineCore:
                 self.available_gpu_memory_for_kv_cache = available_gpu_memory[0]
         else:
             # Attention free models don't need memory for kv cache
+            logger.info("[KV Cache Init] No KV cache needed (attention-free model)")
             available_gpu_memory = [0] * len(kv_cache_specs)
 
         assert len(kv_cache_specs) == len(available_gpu_memory)

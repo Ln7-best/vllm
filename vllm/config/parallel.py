@@ -460,13 +460,21 @@ class ParallelConfig:
 
     @staticmethod
     def sync_kv_cache_memory_size(dp_group: ProcessGroup, kv_cache_memory: int) -> int:
+        import logging
+        logger = logging.getLogger(__name__)
+        
+        logger.info("[KV Cache Sync] Entering sync_kv_cache_memory_size with kv_cache_memory=%d", kv_cache_memory)
         if kv_cache_memory == -1:
             kv_cache_memory = torch.iinfo(torch.int64).max
+            logger.info("[KV Cache Sync] Converted -1 to max value: %d", kv_cache_memory)
         tensor = torch.tensor([kv_cache_memory], dtype=torch.int64, device="cpu")
         # we cannot use broadcast for stateless dp group since it depends
         # on global rank
+        logger.info("[KV Cache Sync] Calling all_reduce (this will block until all ranks call it)...")
         torch.distributed.all_reduce(tensor, op=ReduceOp.MIN, group=dp_group)
-        return tensor.item()
+        result = tensor.item()
+        logger.info("[KV Cache Sync] all_reduce completed, result=%d", result)
+        return result
 
     def compute_hash(self):
         """
