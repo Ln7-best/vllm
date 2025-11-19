@@ -117,47 +117,52 @@ def shuffle_layer(
     Perform expert weights rearrangement of one layer.
     """
     from vllm.distributed.parallel_state import get_ep_group
-    import traceback
     
-    # ===== SOURCE TRACKING: Record call stack and parameter origins (LAYER 0 ONLY) =====
-    # Use a global counter to track layer calls and only log for the first layer
-    if not hasattr(shuffle_layer, '_layer_call_count'):
-        shuffle_layer._layer_call_count = {}
+    # Track layer count for logging (only log for layer 0 to reduce verbosity)
+    if not hasattr(shuffle_layer, '_layer_count_per_rank'):
+        shuffle_layer._layer_count_per_rank = {}
     
-    rank_key = f"rank_{ep_rank}"
-    if rank_key not in shuffle_layer._layer_call_count:
-        shuffle_layer._layer_call_count[rank_key] = 0
+    if ep_rank not in shuffle_layer._layer_count_per_rank:
+        shuffle_layer._layer_count_per_rank[ep_rank] = 0
+    
+    current_layer = shuffle_layer._layer_count_per_rank[ep_rank]
+    shuffle_layer._layer_count_per_rank[ep_rank] += 1
+    
+    # Only log for layer 0 to reduce verbosity
+    log_this_layer = (current_layer == 0)
+    
+    # Handle elastic scale up: extend old_indices if shapes don't match
+    if len(old_indices) != len(new_indices):
+        if log_this_layer:
+            logger.info(
+                "[shuffle_layer] (rank %d) Scale up detected: old_indices length %d != new_indices length %d", 
+                ep_rank, len(old_indices), len(new_indices)
+            )
         
-        logger.error("[shuffle_layer] (rank %d) === OLD_INDICES SOURCE TRACKING (LAYER 0) ===", ep_rank)
-        logger.error("[shuffle_layer] (rank %d) Call stack:", ep_rank)
-        stack = traceback.format_stack()
-        for i, frame in enumerate(stack[-4:-1]):  # Show last 3 call frames
-            logger.error("[shuffle_layer] (rank %d) Stack[%d]: %s", ep_rank, i, frame.strip())
+        # Convert to list if it's not already (for mutability)
+        old_indices = list(old_indices)
         
-        logger.error("[shuffle_layer] (rank %d) old_indices received:", ep_rank)
-        logger.error("[shuffle_layer] (rank %d) - Type: %s", ep_rank, type(old_indices))
-        logger.error("[shuffle_layer] (rank %d) - Length: %d", ep_rank, len(old_indices))
-        logger.error("[shuffle_layer] (rank %d) - ID: %s", ep_rank, id(old_indices))
-        logger.error("[shuffle_layer] (rank %d) - First 20: %s", ep_rank, list(old_indices[:20]))
-        logger.error("[shuffle_layer] (rank %d) - Last 20: %s", ep_rank, list(old_indices[-20:]))
-        logger.error("[shuffle_layer] (rank %d) - All unique values: %s", ep_rank, sorted(list(set(old_indices))))
-        logger.error("[shuffle_layer] (rank %d) === END SOURCE TRACKING ===", ep_rank)
-    else:
-        logger.info("[shuffle_layer] (rank %d) Layer %d: old_indices unique values: %s", 
-                   ep_rank, shuffle_layer._layer_call_count[rank_key], sorted(list(set(old_indices[:10]))))
-    
-    shuffle_layer._layer_call_count[rank_key] += 1
+        # Extend old_indices with -1 to match new_indices length
+        missing_count = len(new_indices) - len(old_indices)
+        old_indices.extend([-1] * missing_count)
+        
+        if log_this_layer:
+            logger.info(
+                "[shuffle_layer] (rank %d) Extended old_indices: added %d entries with -1 (new length: %d)", 
+                ep_rank, missing_count, len(old_indices)
+            )
     
     current_ep_group = get_ep_group()
     ep_world_size = current_ep_group.world_size
-    logger.info(
-        "[shuffle_layer] (rank %d) ENTRY - ep_world_size=%d, num_local_experts=%d",
-        ep_rank, ep_world_size, num_local_experts
-    )
-    logger.info(
-        "[shuffle_layer] (rank %d) new_indices length=%d, first 10: %s", 
-        ep_rank, len(new_indices), new_indices[:10] if len(new_indices) > 10 else new_indices
-    )
+    if log_this_layer:
+        logger.info(
+            "[shuffle_layer] (rank %d) ENTRY - ep_world_size=%d, num_local_experts=%d",
+            ep_rank, ep_world_size, num_local_experts
+        )
+        logger.info(
+            "[shuffle_layer] (rank %d) new_indices length=%d, first 10: %s", 
+            ep_rank, len(new_indices), new_indices[:10] if len(new_indices) > 10 else new_indices
+        )
     local2global = partial(
         idx_local_to_global,
         local_cnt=num_local_experts,
@@ -169,11 +174,13 @@ def shuffle_layer(
         old_indices[local2global(i)] == new_indices[local2global(i)]
         for i in range(num_local_experts)
     ]
-    logger.info("[shuffle_layer] (rank %d) Unchanged experts: %s", ep_rank, is_unchanged)
+    if log_this_layer:
+        logger.info("[shuffle_layer] (rank %d) Unchanged experts: %s", ep_rank, is_unchanged)
 
     # 1. Perform weight copy inside the local rank.
     is_received_locally = is_unchanged[:]
-    logger.info("[shuffle_layer] (rank %d) Starting local weight copy...", ep_rank)
+    if log_this_layer:
+        logger.info("[shuffle_layer] (rank %d) Starting local weight copy...", ep_rank)
     for src in range(num_local_experts):
         src_global = local2global(src)
         for dst in range(num_local_experts):
@@ -187,13 +194,15 @@ def shuffle_layer(
                 for weight, buffer in zip(expert_weights, expert_weights_buffer):
                     buffer[dst].copy_(weight[src])
 
-    logger.info("[shuffle_layer] (rank %d) Local copy completed, is_received_locally: %s", 
-               ep_rank, is_received_locally)
+    if log_this_layer:
+        logger.info("[shuffle_layer] (rank %d) Local copy completed, is_received_locally: %s", 
+                   ep_rank, is_received_locally)
 
     p2p_ops: list[P2POp] = []
 
     # 2. Initiate sending of weights.
-    logger.info("[shuffle_layer] (rank %d) Starting P2P send preparation...", ep_rank)
+    if log_this_layer:
+        logger.info("[shuffle_layer] (rank %d) Starting P2P send preparation...", ep_rank)
     experts_send_loc: dict[int, int] = {}
     for src in range(num_local_experts):
         expert = old_indices[local2global(src)]
@@ -203,7 +212,8 @@ def shuffle_layer(
             continue
         experts_send_loc[expert] = src
     
-    logger.info("[shuffle_layer] (rank %d) experts_send_loc: %s", ep_rank, experts_send_loc)
+    if log_this_layer:
+        logger.info("[shuffle_layer] (rank %d) experts_send_loc: %s", ep_rank, experts_send_loc)
 
     # We need to sort here to match send/recv
     for expert, src in sorted(experts_send_loc.items()):
@@ -239,7 +249,8 @@ def shuffle_layer(
             ]
 
     # 3. Initiate receiving of weights.
-    logger.info("[shuffle_layer] (rank %d) Starting P2P recv preparation...", ep_rank)
+    if log_this_layer:
+        logger.info("[shuffle_layer] (rank %d) Starting P2P recv preparation...", ep_rank)
     experts_recv_loc: dict[int, int] = {}
     for dst in range(num_local_experts):
         if is_received_locally[dst]:
@@ -251,19 +262,22 @@ def shuffle_layer(
             continue
         experts_recv_loc[expert] = dst
     
-    logger.info("[shuffle_layer] (rank %d) experts_recv_loc: %s", ep_rank, experts_recv_loc)
+    if log_this_layer:
+        logger.info("[shuffle_layer] (rank %d) experts_recv_loc: %s", ep_rank, experts_recv_loc)
 
     # We need to sort here to match send/recv
     for expert, dst in sorted(experts_recv_loc.items()):
         # SIMPLIFIED DIAGNOSTIC: Focus on key data
         old_expert_positions = [i for i, exp_id in enumerate(old_indices) if exp_id == expert]
-        logger.info("[shuffle_layer] (rank %d) Expert %d: old_positions=%s", 
-                   ep_rank, expert, old_expert_positions[:5] if old_expert_positions else "NONE")
+        if log_this_layer:
+            logger.info("[shuffle_layer] (rank %d) Expert %d: old_positions=%s", 
+                       ep_rank, expert, old_expert_positions[:5] if old_expert_positions else "NONE")
         
         # KEY: Track old_indices source and content
         if not old_expert_positions:  # Only log details if expert is missing
-            logger.error("[shuffle_layer] (rank %d) Expert %d missing! old_indices sample: first=%s, last=%s", 
-                        ep_rank, expert, old_indices[:10], old_indices[-10:])
+            if log_this_layer:
+                logger.error("[shuffle_layer] (rank %d) Expert %d missing! old_indices sample: first=%s, last=%s", 
+                            ep_rank, expert, old_indices[:10], old_indices[-10:])
         
         ranks_to_send, ranks_to_recv = get_ep_ranks_with_expert(
             expert,
@@ -272,28 +286,30 @@ def shuffle_layer(
             new_indices,
         )
         
-        logger.info("[shuffle_layer] (rank %d) Expert %d: senders=%s, receivers=%s", 
-                   ep_rank, expert, ranks_to_send, ranks_to_recv)
+        if log_this_layer:
+            logger.info("[shuffle_layer] (rank %d) Expert %d: senders=%s, receivers=%s", 
+                       ep_rank, expert, ranks_to_send, ranks_to_recv)
 
         # **BUG FIX**: Handle edge case where no ranks need to send this expert
         # This can happen with new engines in elastic scale up where old_indices are all -1
         if len(ranks_to_send) == 0:
-            logger.error("[shuffle_layer] (rank %d) ⚠️  CRITICAL: Expert %d has no senders!", ep_rank, expert)
-            logger.error("[shuffle_layer] (rank %d) This means NO existing rank has expert %d in their old_indices", ep_rank, expert)
-            
-            # SIMPLIFIED ANALYSIS: Check each rank's experts
-            logger.error("[shuffle_layer] (rank %d) old_indices per rank:", ep_rank)
-            for rank in range(5):
-                start_pos = rank * num_local_experts
-                end_pos = start_pos + num_local_experts
-                if start_pos < len(old_indices):
-                    rank_slice = old_indices[start_pos:end_pos]
-                    unique_experts = sorted(list(set(rank_slice)))
-                    logger.error("[shuffle_layer] (rank %d) Rank %d: %s", ep_rank, rank, unique_experts[:5])
-            
-            # CRITICAL: Show problematic old_indices array source
-            logger.error("[shuffle_layer] (rank %d) old_indices trace: len=%d, all_same=%s", 
-                        ep_rank, len(old_indices), len(set(old_indices)) == 1)
+            if log_this_layer:
+                logger.error("[shuffle_layer] (rank %d) ⚠️  CRITICAL: Expert %d has no senders!", ep_rank, expert)
+                logger.error("[shuffle_layer] (rank %d) This means NO existing rank has expert %d in their old_indices", ep_rank, expert)
+                
+                # SIMPLIFIED ANALYSIS: Check each rank's experts
+                logger.error("[shuffle_layer] (rank %d) old_indices per rank:", ep_rank)
+                for rank in range(5):
+                    start_pos = rank * num_local_experts
+                    end_pos = start_pos + num_local_experts
+                    if start_pos < len(old_indices):
+                        rank_slice = old_indices[start_pos:end_pos]
+                        unique_experts = sorted(list(set(rank_slice)))
+                        logger.error("[shuffle_layer] (rank %d) Rank %d: %s", ep_rank, rank, unique_experts[:5])
+                
+                # CRITICAL: Show problematic old_indices array source
+                logger.error("[shuffle_layer] (rank %d) old_indices trace: len=%d, all_same=%s", 
+                            ep_rank, len(old_indices), len(set(old_indices)) == 1)
             # Skip this expert - it cannot be received if no one is sending it
             continue
         
@@ -317,41 +333,50 @@ def shuffle_layer(
         ]
 
     # 4. Execute the P2P operations. The real communication happens here.
-    logger.info("[shuffle_layer] (rank %d) Prepared %d P2P operations", ep_rank, len(p2p_ops))
+    if log_this_layer:
+        logger.info("[shuffle_layer] (rank %d) Prepared %d P2P operations", ep_rank, len(p2p_ops))
     
     if p2p_ops:
-        logger.info("[shuffle_layer] (rank %d) P2P operations summary:", ep_rank)
-        send_count = recv_count = 0
-        for i, op in enumerate(p2p_ops):
-            if "send" in str(type(op.op)).lower():
-                send_count += 1
-                logger.info("[shuffle_layer] (rank %d) P2P op[%d]: SEND to rank %d", ep_rank, i, op.peer)
-            else:
-                recv_count += 1
-                logger.info("[shuffle_layer] (rank %d) P2P op[%d]: RECV from rank %d", ep_rank, i, op.peer)
-        
-        logger.info("[shuffle_layer] (rank %d) Total: %d sends, %d recvs", ep_rank, send_count, recv_count)
-        logger.info("[shuffle_layer] (rank %d) About to call batch_isend_irecv...", ep_rank)
+        if log_this_layer:
+            logger.info("[shuffle_layer] (rank %d) P2P operations summary:", ep_rank)
+            send_count = recv_count = 0
+            for i, op in enumerate(p2p_ops):
+                if "send" in str(type(op.op)).lower():
+                    send_count += 1
+                    logger.info("[shuffle_layer] (rank %d) P2P op[%d]: SEND to rank %d", ep_rank, i, op.peer)
+                else:
+                    recv_count += 1
+                    logger.info("[shuffle_layer] (rank %d) P2P op[%d]: RECV from rank %d", ep_rank, i, op.peer)
+            
+            logger.info("[shuffle_layer] (rank %d) Total: %d sends, %d recvs", ep_rank, send_count, recv_count)
+            logger.info("[shuffle_layer] (rank %d) About to call batch_isend_irecv...", ep_rank)
         
         try:
             reqs = batch_isend_irecv(p2p_ops)
-            logger.info("[shuffle_layer] (rank %d) batch_isend_irecv returned %d requests, waiting...", 
-                       ep_rank, len(reqs))
+            if log_this_layer:
+                logger.info("[shuffle_layer] (rank %d) batch_isend_irecv returned %d requests, waiting...", 
+                           ep_rank, len(reqs))
             
             for i, req in enumerate(reqs):
-                logger.info("[shuffle_layer] (rank %d) Waiting for request %d/%d...", ep_rank, i+1, len(reqs))
+                if log_this_layer:
+                    logger.info("[shuffle_layer] (rank %d) Waiting for request %d/%d...", ep_rank, i+1, len(reqs))
                 req.wait()
-                logger.info("[shuffle_layer] (rank %d) Request %d/%d completed", ep_rank, i+1, len(reqs))
+                if log_this_layer:
+                    logger.info("[shuffle_layer] (rank %d) Request %d/%d completed", ep_rank, i+1, len(reqs))
             
-            logger.info("[shuffle_layer] (rank %d) All P2P operations completed successfully!", ep_rank)
+            if log_this_layer:
+                logger.info("[shuffle_layer] (rank %d) All P2P operations completed successfully!", ep_rank)
         except Exception as e:
+            # Always log errors, regardless of layer
             logger.error("[shuffle_layer] (rank %d) P2P operation failed: %s", ep_rank, str(e))
             raise
     else:
-        logger.info("[shuffle_layer] (rank %d) No P2P operations needed", ep_rank)
+        if log_this_layer:
+            logger.info("[shuffle_layer] (rank %d) No P2P operations needed", ep_rank)
 
     # 5. Copy the weights from the buffer back to the original weights.
-    logger.info("[shuffle_layer] (rank %d) Starting final weight copy...", ep_rank)
+    if log_this_layer:
+        logger.info("[shuffle_layer] (rank %d) Starting final weight copy...", ep_rank)
     copy_count = 0
     for dst in range(num_local_experts):
         if is_unchanged[dst]:
@@ -369,8 +394,9 @@ def shuffle_layer(
                 weight[dst].copy_(buffer[src])
             copy_count += 1
     
-    logger.info("[shuffle_layer] (rank %d) shuffle_layer completed successfully, copied %d experts", 
-               ep_rank, copy_count)
+    if log_this_layer:
+        logger.info("[shuffle_layer] (rank %d) shuffle_layer completed successfully, copied %d experts", 
+                   ep_rank, copy_count)
 
 
 def rearrange_expert_weights_inplace(
