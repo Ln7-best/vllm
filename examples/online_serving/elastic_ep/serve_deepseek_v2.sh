@@ -58,6 +58,11 @@ export RAY_DEDUP_LOGS=0
 export VLLM_ALL2ALL_BACKEND="pplx"
 export VLLM_USE_DEEP_GEMM=1
 
+# NCCL Debug Configuration - Enable detailed NCCL logging for P2P communication debugging
+export NCCL_DEBUG=INFO
+export NCCL_DEBUG_SUBSYS=ALL
+export NCCL_DEBUG_FILE=/tmp/nccl_debug.log
+
 vllm serve $MODEL_NAME \
     --data-parallel-size $DATA_PARALLEL_SIZE \
     --data-parallel-size-local $DATA_PARALLEL_SIZE \
