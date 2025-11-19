@@ -1182,7 +1182,13 @@ def init_distributed_environment(
         ip = parallel_config.master_addr
         rank = parallel_config.data_parallel_rank * world_size + rank
         world_size = parallel_config.world_size_across_dp
-        port = parallel_config.master_port
+        # CRITICAL FIX for elastic scale up: Use data_parallel_master_port directly
+        # to ensure all processes (existing and new) use the same distributed_init_method
+        # during scale up operations. This is the same issue as in the second branch below.
+        #
+        # Original code (kept for reference):
+        # port = parallel_config.master_port
+        port = parallel_config.data_parallel_master_port
         distributed_init_method = get_distributed_init_method(ip, port)
     elif (
         config is not None
@@ -1196,7 +1202,14 @@ def init_distributed_environment(
         # adjust the world size to take into account data parallelism
         world_size = parallel_config.world_size_across_dp
         ip = parallel_config.data_parallel_master_ip
-        port = parallel_config.get_next_dp_init_port()
+        # CRITICAL FIX for elastic scale up: Use data_parallel_master_port directly
+        # instead of get_next_dp_init_port() to ensure all processes (existing and new)
+        # use the same distributed_init_method during scale up operations.
+        # This is the same issue as in stateless_init_dp_group() - see parallel.py:375
+        #
+        # Original code (kept for reference):
+        # port = parallel_config.get_next_dp_init_port()
+        port = parallel_config.data_parallel_master_port
         distributed_init_method = get_distributed_init_method(ip, port)
         logger.debug(
             "Adjusting world_size=%d rank=%d distributed_init_method=%s for DP",
