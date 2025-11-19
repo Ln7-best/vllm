@@ -355,7 +355,23 @@ class ParallelConfig:
         last_exc: Exception | None = None
         for attempt in range(max_retries):
             try:
-                port = self.get_next_dp_init_port()
+                # CRITICAL FIX for elastic scale up: Use data_parallel_master_port directly
+                # instead of get_next_dp_init_port() to ensure all processes (existing and new)
+                # use the same rendezvous endpoint during scale up operations.
+                # 
+                # Background: In elastic scale up, existing engines receive a new port via
+                # ReconfigureDistributedRequest which updates data_parallel_master_port.
+                # New engines are created with the same data_parallel_master_port value.
+                # However, get_next_dp_init_port() returns different ports because:
+                # 1. Each Ray Actor has its own _data_parallel_master_port_list copy
+                # 2. Existing engines pop from their pre-initialized lists (e.g., 35279)
+                # 3. New engines may have empty lists and use data_parallel_master_port + increment
+                # This causes different rendezvous endpoints and prevents forming a unified DP group.
+                #
+                # Original code (kept for reference):
+                # port = self.get_next_dp_init_port()
+                port = self.data_parallel_master_port
+                
                 logger.info(
                     "[DP Group Init Debug] Rank %d attempting to init DP group: master=%s:%d, world_size=%d, attempt=%d/%d",
                     self.data_parallel_rank,
