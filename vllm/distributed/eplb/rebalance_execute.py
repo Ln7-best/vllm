@@ -253,35 +253,49 @@ def shuffle_layer(
             logger.info("[shuffle_layer] (rank %d) P2P[%d]: shape=%s, device=%s, dtype=%s, peer=%d", 
                        ep_rank, i, tensor.shape, tensor.device, tensor.dtype, op.peer)
         
-        # Force GPU synchronization
+        # CRITICAL: Set current GPU device for NCCL PG backend
+        # PyTorch docs: "batch_isend_irecv with NCCL PG backend requires torch.cuda.set_device"
         if torch.cuda.is_available():
+            current_device = torch.cuda.current_device()
+            torch.cuda.set_device(current_device)
             torch.cuda.synchronize()
-            logger.info("[shuffle_layer] (rank %d) CUDA synchronized", ep_rank)
+            logger.info("[shuffle_layer] (rank %d) GPU device set to %d and synchronized", ep_rank, current_device)
         
         # Check if we're waiting for other processes
         logger.info("[shuffle_layer] (rank %d) About to call batch_isend_irecv with %d operations...", ep_rank, len(p2p_ops))
         
         # Execute with timing and timeout detection
         import time
-        import signal
+        import threading
         start_time = time.time()
         logger.info("[shuffle_layer] (rank %d) CALLING batch_isend_irecv at timestamp %.6f", ep_rank, start_time)
         
-        # Add timeout mechanism to prevent infinite hang
-        def timeout_handler(signum, frame):
-            logger.error("[shuffle_layer] (rank %d) batch_isend_irecv TIMEOUT after 30 seconds!", ep_rank)
-            raise TimeoutError("batch_isend_irecv timed out after 30 seconds")
+        # More reliable timeout mechanism using threading.Timer
+        timeout_occurred = threading.Event()
         
-        # Try batch_isend_irecv with timeout
-        signal.signal(signal.SIGALRM, timeout_handler)
-        signal.alarm(30)  # 30 second timeout
+        def timeout_handler():
+            timeout_occurred.set()
+            logger.error("[shuffle_layer] (rank %d) batch_isend_irecv TIMEOUT after 10 seconds! Switching to fallback...", ep_rank)
+        
+        timer = threading.Timer(10.0, timeout_handler)  # 10 second timeout (shorter for faster testing)
+        timer.start()
         
         try:
+            if timeout_occurred.is_set():
+                raise TimeoutError("batch_isend_irecv timed out")
+            
             reqs = batch_isend_irecv(p2p_ops)
-            signal.alarm(0)  # Cancel timeout
-        except TimeoutError:
-            signal.alarm(0)
-            logger.error("[shuffle_layer] (rank %d) Switching to synchronous P2P as fallback...", ep_rank)
+            timer.cancel()  # Cancel timeout if successful
+            
+            if timeout_occurred.is_set():
+                raise TimeoutError("batch_isend_irecv timed out during execution")
+                
+        except (TimeoutError, Exception) as e:
+            timer.cancel()
+            if timeout_occurred.is_set():
+                logger.error("[shuffle_layer] (rank %d) batch_isend_irecv TIMEOUT! Switching to synchronous P2P fallback...", ep_rank)
+            else:
+                logger.error("[shuffle_layer] (rank %d) batch_isend_irecv ERROR: %s. Switching to fallback...", ep_rank, str(e))
             
             # FALLBACK: Use synchronous send/recv instead
             for i, op in enumerate(p2p_ops):
@@ -293,7 +307,7 @@ def shuffle_layer(
                     logger.info("[shuffle_layer] (rank %d) Fallback RECV[%d] from rank %d", ep_rank, i, op.peer)
                     torch.distributed.recv(op.tensor, op.peer, group=ep_group)
             
-            logger.info("[shuffle_layer] (rank %d) Synchronous P2P fallback completed", ep_rank)
+            logger.info("[shuffle_layer] (rank %d) Synchronous P2P fallback completed successfully!", ep_rank)
             reqs = []  # No requests to wait for in sync mode
         except Exception as e:
             signal.alarm(0)
