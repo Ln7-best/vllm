@@ -132,19 +132,12 @@ def shuffle_layer(
     log_this_layer = (current_layer == 0)
     
     # Add logging to confirm -1 filling behavior
-    if log_this_layer:
-        logger.info(
-            "[shuffle_layer] (rank %d) Input indices - old_indices len=%d, new_indices len=%d", 
-            ep_rank, len(old_indices), len(new_indices)
-        )
-        logger.info(
-            "[shuffle_layer] (rank %d) old_indices sample: %s", 
-            ep_rank, old_indices[:20] if len(old_indices) > 20 else old_indices
-        )
-        logger.info(
-            "[shuffle_layer] (rank %d) new_indices sample: %s", 
-            ep_rank, new_indices[:20] if len(new_indices) > 20 else new_indices
-        )
+    # CRITICAL DEBUG: Print complete indices for rank 0 and 4 layer 0 only
+    if (ep_rank == 0 or ep_rank == 4) and log_this_layer:
+        logger.info("=== RANK %d LAYER 0 COMPLETE INDICES DEBUG ===", ep_rank)
+        logger.info("RANK_%d_OLD_INDICES: %s", ep_rank, old_indices)
+        logger.info("RANK_%d_NEW_INDICES: %s", ep_rank, new_indices)
+        logger.info("=== END RANK %d DEBUG ===", ep_rank)
     
     current_ep_group = get_ep_group()
     ep_world_size = current_ep_group.world_size
@@ -600,17 +593,12 @@ def _map_old_expert_indices_with_rank_mapping(
         neg_ones_count, len(sample_layer), sample_layer[:20].tolist() if len(sample_layer) > 0 else []
     )
 
-    # CRITICAL: Print the full return result to confirm -1 filling
-    logger.info("[_map_old_expert_indices] *** RETURN RESULT ***")
-    logger.info("[_map_old_expert_indices] Full shape: %s", mapped_expert_indices.shape)
-    for layer_idx in range(min(3, mapped_expert_indices.shape[0])):  # Show first 3 layers
-        layer_data = mapped_expert_indices[layer_idx]
-        neg_ones_in_layer = (layer_data == -1).sum().item()
-        logger.info(
-            "[_map_old_expert_indices] Layer %d: -1_count=%d/%d, values=%s", 
-            layer_idx, neg_ones_in_layer, len(layer_data), layer_data.tolist()
-        )
-    logger.info("[_map_old_expert_indices] *** END RETURN RESULT ***")
+    # CRITICAL: Simple confirmation of -1 filling
+    sample_layer = mapped_expert_indices[0] if mapped_expert_indices.shape[0] > 0 else []
+    neg_ones_total = (sample_layer == -1).sum().item() if len(sample_layer) > 0 else 0
+    logger.info("[_map_old_expert_indices] RETURN: shape=%s, -1_count=%d, last_10=%s", 
+               mapped_expert_indices.shape, neg_ones_total, 
+               sample_layer[-10:].tolist() if len(sample_layer) >= 10 else [])
 
     return mapped_expert_indices
 
