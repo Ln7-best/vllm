@@ -359,12 +359,16 @@ def shuffle_layer(
             logger.info("[shuffle_layer] (rank %d) P2P operations summary:", ep_rank)
             send_count = recv_count = 0
             for i, op in enumerate(p2p_ops):
-                if "send" in str(type(op.op)).lower():
+                # FIXED: Check function name instead of type string
+                op_name = op.op.__name__ if hasattr(op.op, '__name__') else 'unknown'
+                if op_name == 'isend':
                     send_count += 1
                     logger.info("[shuffle_layer] (rank %d) P2P op[%d]: SEND to rank %d", ep_rank, i, op.peer)
-                else:
+                elif op_name == 'irecv':
                     recv_count += 1
                     logger.info("[shuffle_layer] (rank %d) P2P op[%d]: RECV from rank %d", ep_rank, i, op.peer)
+                else:
+                    logger.info("[shuffle_layer] (rank %d) P2P op[%d]: UNKNOWN (%s) with rank %d", ep_rank, i, op_name, op.peer)
             
             logger.info("[shuffle_layer] (rank %d) Total: %d sends, %d recvs", ep_rank, send_count, recv_count)
             logger.info("[shuffle_layer] (rank %d) About to call batch_isend_irecv...", ep_rank)
