@@ -772,9 +772,11 @@ class Worker(WorkerBase):
         if new_ep_size < old_ep_size:
             num_local_physical_experts = num_local_experts
             assert self.model_runner.eplb_state is not None
-            new_physical_experts = (
-                self.model_runner.eplb_state.physical_to_logical_map.shape[1]
-            )
+            # new_physical_experts = (
+            #     self.model_runner.eplb_state.physical_to_logical_map.shape[1]
+            # )
+            eplb_model_state = next(iter(self.model_runner.eplb_state.model_states.values()))
+            new_physical_experts = eplb_model_state.physical_to_logical_map.shape[1]
             parallel_config.eplb_config.num_redundant_experts = (
                 new_physical_experts
                 - self.model_runner.eplb_state.logical_replica_count.shape[1]
