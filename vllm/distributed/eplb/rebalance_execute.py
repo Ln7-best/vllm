@@ -246,8 +246,8 @@ def shuffle_layer(
     #         dummy_p2p_ops.append(P2POp(torch.distributed.irecv, tensor,  0))
     
     # === DUMMY P2P TEST: rank 0 and 1 only ===
-    global_rank = torch.dist.get_rank()
-    world_size = torch.dist.get_world_size()
+    global_rank = torch.distributed.get_rank()
+    world_size = torch.distributed.get_world_size()
 
     # 显式设置当前进程使用的 GPU（推荐做法）
     torch.cuda.set_device(global_rank)
@@ -264,14 +264,14 @@ def shuffle_layer(
         if ep_rank == 0:
             # Rank 0: 发送
             send_tensor = torch.ones(10, dtype=torch.float32, device=device) * 123.0
-            dummy_p2p_ops.append(P2POp(torch.dist.isend, send_tensor, peer=global_peer))
+            dummy_p2p_ops.append(P2POp(torch.distributed.isend, send_tensor, peer=global_peer))
             tensor_to_hold = send_tensor  # 防止 tensor 被提前回收
             logger.info(f"[Global Rank {global_rank}] Sending to global peer {global_peer}")
 
         elif ep_rank == 1:
             # Rank 1: 接收
             recv_tensor = torch.zeros(10, dtype=torch.float32, device=device)
-            dummy_p2p_ops.append(P2POp(torch.dist.irecv, recv_tensor, peer=global_peer))
+            dummy_p2p_ops.append(P2POp(torch.distributed.irecv, recv_tensor, peer=global_peer))
             tensor_to_hold = recv_tensor  # 保持引用直到 wait()
             logger.info(f"[Global Rank {global_rank}] Receiving from global peer {global_peer}")
 
