@@ -26,6 +26,7 @@ MoE layer. If we have 32 EP ranks, then each GPU will hold 288 / 32 = 9 local
 physical experts.
 """
 
+import os
 import time
 from collections.abc import Sequence
 from dataclasses import dataclass
