@@ -242,12 +242,35 @@ def shuffle_layer(
                 logger.info("[shuffle_layer] (rank %d) P2P op[%d]: RECV from rank %d", ep_rank, i, op.peer)
         
         logger.info("[shuffle_layer] (rank %d) Total: %d sends, %d recvs", ep_rank, send_count, recv_count)
-        logger.info("[shuffle_layer] (rank %d) About to call batch_isend_irecv...", ep_rank)
         
-        # Execute with timing
+        # CRITICAL: Deep diagnosis before batch_isend_irecv
+        logger.info("[shuffle_layer] (rank %d) === BATCH_ISEND_IRECV DIAGNOSIS ===", ep_rank)
+        logger.info("[shuffle_layer] (rank %d) Process group size: %d, rank: %d", ep_rank, ep_group.size(), ep_group.rank())
+        
+        # Check tensor info for each operation
+        for i, op in enumerate(p2p_ops):
+            tensor = op.tensor
+            logger.info("[shuffle_layer] (rank %d) P2P[%d]: shape=%s, device=%s, dtype=%s, peer=%d", 
+                       ep_rank, i, tensor.shape, tensor.device, tensor.dtype, op.peer)
+        
+        # Force GPU synchronization
+        if torch.cuda.is_available():
+            torch.cuda.synchronize()
+            logger.info("[shuffle_layer] (rank %d) CUDA synchronized", ep_rank)
+        
+        # Check if we're waiting for other processes
+        logger.info("[shuffle_layer] (rank %d) About to call batch_isend_irecv with %d operations...", ep_rank, len(p2p_ops))
+        
+        # Execute with timing and timeout detection
         import time
         start_time = time.time()
-        reqs = batch_isend_irecv(p2p_ops)
+        logger.info("[shuffle_layer] (rank %d) CALLING batch_isend_irecv at timestamp %.6f", ep_rank, start_time)
+        
+        try:
+            reqs = batch_isend_irecv(p2p_ops)
+        except Exception as e:
+            logger.error("[shuffle_layer] (rank %d) batch_isend_irecv FAILED: %s", ep_rank, str(e))
+            raise
         call_time = time.time() - start_time
         logger.info("[shuffle_layer] (rank %d) batch_isend_irecv returned in %.3fs, waiting for %d requests...", 
                    ep_rank, call_time, len(reqs))
@@ -259,6 +282,10 @@ def shuffle_layer(
         logger.info("[shuffle_layer] (rank %d) All P2P operations completed successfully!", ep_rank)
     else:
         logger.info("[shuffle_layer] (rank %d) No P2P operations needed", ep_rank)
+        # CRITICAL: Add barrier for ranks without P2P ops to prevent deadlock
+        logger.info("[shuffle_layer] (rank %d) Calling barrier to sync with P2P ranks...", ep_rank)
+        ep_group.barrier()
+        logger.info("[shuffle_layer] (rank %d) Barrier completed, all ranks synchronized", ep_rank)
 
     # 5. Copy the weights from the buffer back to the original weights.
     for dst in range(num_local_experts):
