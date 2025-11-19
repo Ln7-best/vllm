@@ -633,6 +633,11 @@ class CoreEngineActorManager:
         cur_data_parallel_size = len(self.local_engine_actors) + len(
             self.remote_engine_actors
         )
+        
+        logger.info(
+            "[Scale Up] Starting elastic EP scale up: current DP size=%d, target DP size=%d",
+            cur_data_parallel_size, new_data_parallel_size
+        )
 
         assert new_data_parallel_size > cur_data_parallel_size, (
             f"New data parallel size {new_data_parallel_size} must be greater "
@@ -642,6 +647,11 @@ class CoreEngineActorManager:
 
         placement_groups, local_dp_ranks = self.add_dp_placement_groups(
             cur_vllm_config, new_data_parallel_size
+        )
+        
+        logger.info(
+            "[Scale Up] Created %d placement groups for new engines",
+            len(placement_groups)
         )
 
         world_size = cur_vllm_config.parallel_config.world_size
@@ -696,6 +706,16 @@ class CoreEngineActorManager:
                 self.remote_engine_actors.append(actor)
             self.created_placement_groups.append(pg)
             self.placement_group_is_local.append(local_client)
+            
+            logger.info(
+                "[Scale Up] Created actor %d/%d (dp_rank=%d, local=%s)",
+                i + 1, len(placement_groups), rank, local_client
+            )
+        
+        logger.info(
+            "[Scale Up] All %d actors created, waiting for initialization...",
+            len(placement_groups)
+        )
 
         ray.get(
             [
@@ -710,6 +730,10 @@ class CoreEngineActorManager:
                 ]
             ]
         )
+        
+        logger.info(
+            "[Scale Up] All actors initialized successfully, starting run methods..."
+        )
 
         actors = (
             self.local_engine_actors[-new_local_engines:]
@@ -719,6 +743,11 @@ class CoreEngineActorManager:
 
         for actor in actors:
             self.run_refs.append(actor.run.remote())
+        
+        logger.info(
+            "[Scale Up] Started run methods for all %d new actors",
+            len(actors)
+        )
 
         cur_vllm_config.parallel_config.data_parallel_size = new_data_parallel_size
         # Update old_vllm_config with new data_parallel_size_local if any new
@@ -727,6 +756,11 @@ class CoreEngineActorManager:
             cur_vllm_config.parallel_config.data_parallel_size_local += (
                 new_local_engines
             )
+        
+        logger.info(
+            "[Scale Up] Elastic EP scale up completed successfully: DP size %d -> %d",
+            cur_data_parallel_size, new_data_parallel_size
+        )
 
     def scale_down_elastic_ep(
         self, cur_data_parallel_size: int, new_data_parallel_size: int
