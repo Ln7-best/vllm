@@ -245,12 +245,35 @@ def shuffle_layer(
             tensor = torch.zeros(10, dtype=torch.float32, device=device)
             dummy_p2p_ops.append(P2POp(torch.distributed.irecv, tensor, get_global_rank(ep_group, 0)))
     
+    # === DUMMY P2P TEST: rank 0 and 1 only ===
+    dummy_p2p_ops = []
+    
+    if ep_group.size() >= 2 and ep_rank < 2:
+        device = torch.cuda.current_device() if torch.cuda.is_available() else torch.device('cpu')
+        
+        if ep_rank == 0:
+            # Rank 0 sends to rank 1
+            tensor = torch.ones(10, dtype=torch.float32, device=device) * 123.0
+            dummy_p2p_ops.append(P2POp(torch.distributed.isend, tensor, get_global_rank(ep_group, 1)))
+            logger.info(f"[Rank 0] Created dummy send to rank 1")
+        elif ep_rank == 1:
+            # Rank 1 receives from rank 0
+            tensor = torch.zeros(10, dtype=torch.float32, device=device)
+            dummy_p2p_ops.append(P2POp(torch.distributed.irecv, tensor, get_global_rank(ep_group, 0)))
+            logger.info(f"[Rank 1] Created dummy recv from rank 0")
+    
     if dummy_p2p_ops:
-        logger.info(f"[Rank {ep_rank}] Testing batch_isend_irecv...")
+        logger.info(f"[Rank {ep_rank}] Testing batch_isend_irecv with {len(dummy_p2p_ops)} ops...")
         reqs = batch_isend_irecv(dummy_p2p_ops)
         for req in reqs:
             req.wait()
-        logger.info(f"[Rank {ep_rank}] ✅ P2P test completed")
+        logger.info(f"[Rank {ep_rank}] ✅ Dummy P2P test completed")
+    
+    # Skip real operations
+    # if p2p_ops:
+    #     reqs = batch_isend_irecv(p2p_ops)
+    #     for req in reqs:
+    #         req.wait()
     
     # Skip real operations for now
     # if p2p_ops:
