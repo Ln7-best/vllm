@@ -276,46 +276,51 @@ def shuffle_layer(
     logger.info(f"[Rank {ep_rank}] Device allocation: {device} (global_rank: {global_rank}, ep_rank: {ep_rank}, current_device: {current_device}, visible_gpus: {num_visible_gpus}, strategy: {device_strategy})")
 
     dummy_p2p_ops = []
-    tensor_to_hold = None  # 用于延长 tensor 生命周期
+    tensors_to_hold = []  # 用于延长 tensor 生命周期
 
-    # 只在 ep_group 至少有 2 个进程、且当前是组内前两个 rank 时执行 P2P
-    if ep_group.size() >= 2 and ep_rank < 2:
-        # 获取组内 rank 0 和 1 对应的全局 rank
-        global_peer = get_global_rank(ep_group, 1 - ep_rank)  # 对方的全局 rank
+    # Ring communication: 所有设备都参与 (强制执行)
+    # 计算Ring通信的邻居节点
+    next_rank = (ep_rank + 1) % ep_group.size()  # 下一个节点
+    prev_rank = (ep_rank - 1) % ep_group.size()  # 上一个节点
+    
+    # 获取全局rank
+    next_global_rank = get_global_rank(ep_group, next_rank)
+    prev_global_rank = get_global_rank(ep_group, prev_rank)
+    
+    # 每个rank都发送和接收
+    # 发送给下一个rank
+    send_tensor = torch.ones(10, dtype=torch.float32, device=device) * (ep_rank * 100 + 42)
+    dummy_p2p_ops.append(P2POp(torch.distributed.isend, send_tensor, peer=next_global_rank))
+    tensors_to_hold.append(send_tensor)
+    
+    # 从上一个rank接收
+    recv_tensor = torch.zeros(10, dtype=torch.float32, device=device)
+    dummy_p2p_ops.append(P2POp(torch.distributed.irecv, recv_tensor, peer=prev_global_rank))
+    tensors_to_hold.append(recv_tensor)
+    
+    logger.info(f"[Rank {ep_rank}] Ring communication: sending to rank {next_rank}(global:{next_global_rank}), receiving from rank {prev_rank}(global:{prev_global_rank})")
 
-        if ep_rank == 0:
-            # Rank 0: 发送
-            send_tensor = torch.ones(10, dtype=torch.float32, device=device) * 123.0
-            dummy_p2p_ops.append(P2POp(torch.distributed.isend, send_tensor, peer=global_peer))
-            tensor_to_hold = send_tensor  # 防止 tensor 被提前回收
-            logger.info(f"[Global Rank {global_rank}] Sending to global peer {global_peer}")
-
-        elif ep_rank == 1:
-            # Rank 1: 接收
-            recv_tensor = torch.zeros(10, dtype=torch.float32, device=device)
-            dummy_p2p_ops.append(P2POp(torch.distributed.irecv, recv_tensor, peer=global_peer))
-            tensor_to_hold = recv_tensor  # 保持引用直到 wait()
-            logger.info(f"[Global Rank {global_rank}] Receiving from global peer {global_peer}")
-
-    # 执行批量通信
-    if dummy_p2p_ops:
-        logger.info(f"[Global Rank {global_rank}] Launching batch_isend_irecv...")
-        work_handles = batch_isend_irecv(dummy_p2p_ops)
+    # 执行批量通信 (强制执行)
+    logger.info(f"[Rank {ep_rank}] Launching Ring P2P with {len(dummy_p2p_ops)} operations...")
+    work_handles = batch_isend_irecv(dummy_p2p_ops)
+    
+    # 等待所有通信完成
+    for work in work_handles:
+        work.wait()
+    
+    # 验证Ring通信结果：检查接收到的数据
+    if len(tensors_to_hold) >= 2:  # 确保有接收tensor
+        recv_tensor = tensors_to_hold[1]  # 第二个tensor是接收的
+        expected_value = prev_rank * 100 + 42  # 从上一个rank期望收到的值
+        expected_tensor = torch.full_like(recv_tensor, expected_value)
         
-        # 等待所有通信完成
-        for work in work_handles:
-            work.wait()
-        
-        # 可选：验证接收结果（仅 rank 1）
-        if ep_rank == 1:
-            expected = torch.full_like(tensor_to_hold, 123.0)
-            if torch.allclose(tensor_to_hold, expected):
-                logger.info(f"[Global Rank {global_rank}] ✅ Received correct data: {tensor_to_hold[0].item()}")
-            else:
-                logger.error(f"[Global Rank {global_rank}] ❌ Data mismatch!")
-                raise RuntimeError("P2P communication test failed!")
+        if torch.allclose(recv_tensor, expected_tensor):
+            logger.info(f"[Rank {ep_rank}] ✅ Ring P2P success: received {recv_tensor[0].item()} from rank {prev_rank}")
+        else:
+            logger.error(f"[Rank {ep_rank}] ❌ Ring P2P failed: expected {expected_value}, got {recv_tensor[0].item()}")
+            raise RuntimeError("Ring P2P communication test failed!")
 
-        logger.info(f"[Global Rank {global_rank}] ✅ Dummy P2P test completed successfully.")
+    logger.info(f"[Rank {ep_rank}] ✅ Ring P2P test completed successfully for all {ep_group.size()} ranks.")
     
     # Skip real operations
     # if p2p_ops:
