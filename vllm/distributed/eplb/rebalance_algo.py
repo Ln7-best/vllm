@@ -283,6 +283,10 @@ def rebalance_experts(
             num_layers, -1
         ),
     )
+    logger.info(
+        "end rebalance_experts, phy2log.shape=%s, log2phy.shape=%s, logcnt.shape=%s",
+        phy2log.shape, log2phy.shape, logcnt.shape
+    )
     return phy2log, log2phy, logcnt
 
 
