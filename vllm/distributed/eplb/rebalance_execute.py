@@ -258,11 +258,13 @@ def shuffle_layer(
     num_visible_gpus = torch.cuda.device_count()
     
     # Try using ep_rank as device ID first (common in distributed setups)
+    import os
+    logger.info(f"CUDA_VISIBLE_DEVICES={os.environ.get('CUDA_VISIBLE_DEVICES')}")
     try:
         torch.cuda.set_device(ep_rank)
         current_device = torch.cuda.current_device()
         device = torch.device(f'cuda:{current_device}')
-        device_strategy = "ep_rank_direct"
+        device_strategy = "ep_rank_direct" 
     except RuntimeError:
         # Fallback: use modulo if ep_rank exceeds visible GPU count
         local_device_id = ep_rank % max(1, num_visible_gpus)
