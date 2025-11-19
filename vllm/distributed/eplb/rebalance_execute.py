@@ -249,9 +249,14 @@ def shuffle_layer(
     global_rank = torch.distributed.get_rank()
     world_size = torch.distributed.get_world_size()
     logger.info(f"[Global Rank {global_rank}]")
-    # 显式设置当前进程使用的 GPU（推荐做法）
-    torch.cuda.set_device(global_rank)
-    device = torch.device(f'cuda:{global_rank}')
+    
+    # Fix: Use current device instead of global_rank to avoid device ordinal errors
+    # in multi-node environments where global_rank != local_device_id
+    assert torch.cuda.is_available(), "CUDA must be available for P2P operations"
+    current_device = torch.cuda.current_device()
+    device = torch.device(f'cuda:{current_device}')
+    
+    logger.info(f"[Rank {ep_rank}] Using device: {device} (global_rank: {global_rank}, local_device: {current_device})")
 
     dummy_p2p_ops = []
     tensor_to_hold = None  # 用于延长 tensor 生命周期
