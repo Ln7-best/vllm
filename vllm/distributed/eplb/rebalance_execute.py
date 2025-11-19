@@ -107,11 +107,12 @@ def get_ep_ranks_with_expert(
 def shuffle_layer(
     num_local_experts: int,
     ep_rank: int,
-    old_indices: Sequence[int],
-    new_indices: Sequence[int],
+    old_indices: list[int],
+    new_indices: list[int],
     expert_weights: Iterable[torch.Tensor],
-    expert_weights_buffer: Sequence[torch.Tensor],
+    expert_weights_buffer: Iterable[torch.Tensor],
     ep_group: ProcessGroup,
+    layer_index: int = 0,
 ) -> None:
     """
     Perform expert weights rearrangement of one layer.
@@ -278,61 +279,60 @@ def shuffle_layer(
     dummy_p2p_ops = []
     tensors_to_hold = []  # 用于延长 tensor 生命周期
 
-    # Ring communication: 所有设备都参与 (强制执行)
-    # 计算Ring通信的邻居节点
-    next_rank = (ep_rank + 1) % ep_group.size()  # 下一个节点
-    prev_rank = (ep_rank - 1) % ep_group.size()  # 上一个节点
-    
-    # 获取全局rank
-    next_global_rank = get_global_rank(ep_group, next_rank)
-    prev_global_rank = get_global_rank(ep_group, prev_rank)
-    
-    # 每个rank都发送和接收
-    # 发送给下一个rank
-    send_tensor = torch.ones(10, dtype=torch.float32, device=device) * (ep_rank * 100 + 42)
-    dummy_p2p_ops.append(P2POp(torch.distributed.isend, send_tensor, peer=next_global_rank))
-    tensors_to_hold.append(send_tensor)
-    
-    # 从上一个rank接收
-    recv_tensor = torch.zeros(10, dtype=torch.float32, device=device)
-    dummy_p2p_ops.append(P2POp(torch.distributed.irecv, recv_tensor, peer=prev_global_rank))
-    tensors_to_hold.append(recv_tensor)
-    
-    logger.info(f"[Rank {ep_rank}] Ring communication: sending to rank {next_rank}(global:{next_global_rank}), receiving from rank {prev_rank}(global:{prev_global_rank})")
-
-    # 执行批量通信 (强制执行)
-    logger.info(f"[Rank {ep_rank}] Launching Ring P2P with {len(dummy_p2p_ops)} operations...")
-    work_handles = batch_isend_irecv(dummy_p2p_ops)
-    
-    # 等待所有通信完成
-    for work in work_handles:
-        work.wait()
-    
-    # 验证Ring通信结果：检查接收到的数据
-    if len(tensors_to_hold) >= 2:  # 确保有接收tensor
-        recv_tensor = tensors_to_hold[1]  # 第二个tensor是接收的
-        expected_value = prev_rank * 100 + 42  # 从上一个rank期望收到的值
-        expected_tensor = torch.full_like(recv_tensor, expected_value)
+    # Dummy Ring P2P communication: 只在第一层执行
+    if layer_index == 0:
+        # 计算Ring通信的邻居节点
+        next_rank = (ep_rank + 1) % ep_group.size()  # 下一个节点
+        prev_rank = (ep_rank - 1) % ep_group.size()  # 上一个节点
         
-        if torch.allclose(recv_tensor, expected_tensor):
-            logger.info(f"[Rank {ep_rank}] ✅ Ring P2P success: received {recv_tensor[0].item()} from rank {prev_rank}")
-        else:
-            logger.error(f"[Rank {ep_rank}] ❌ Ring P2P failed: expected {expected_value}, got {recv_tensor[0].item()}")
-            raise RuntimeError("Ring P2P communication test failed!")
+        # 获取全局rank
+        next_global_rank = get_global_rank(ep_group, next_rank)
+        prev_global_rank = get_global_rank(ep_group, prev_rank)
+        
+        # 每个rank都发送和接收
+        # 发送给下一个rank
+        send_tensor = torch.ones(10, dtype=torch.float32, device=device) * (ep_rank * 100 + 42)
+        dummy_p2p_ops.append(P2POp(torch.distributed.isend, send_tensor, peer=next_global_rank))
+        tensors_to_hold.append(send_tensor)
+        
+        # 从上一个rank接收
+        recv_tensor = torch.zeros(10, dtype=torch.float32, device=device)
+        dummy_p2p_ops.append(P2POp(torch.distributed.irecv, recv_tensor, peer=prev_global_rank))
+        tensors_to_hold.append(recv_tensor)
+        
+        logger.info(f"[Rank {ep_rank}] Layer {layer_index}: Ring communication - sending to rank {next_rank}(global:{next_global_rank}), receiving from rank {prev_rank}(global:{prev_global_rank})")
 
-    logger.info(f"[Rank {ep_rank}] ✅ Ring P2P test completed successfully for all {ep_group.size()} ranks.")
+        # 执行批量通信 (仅在第一层)
+        logger.info(f"[Rank {ep_rank}] Layer {layer_index}: Launching Ring P2P with {len(dummy_p2p_ops)} operations...")
+        work_handles = batch_isend_irecv(dummy_p2p_ops)
+        
+        # 等待所有通信完成
+        for work in work_handles:
+            work.wait()
+        
+        # 验证Ring通信结果：检查接收到的数据
+        if len(tensors_to_hold) >= 2:  # 确保有接收tensor
+            recv_tensor = tensors_to_hold[1]  # 第二个tensor是接收的
+            expected_value = prev_rank * 100 + 42  # 从上一个rank期望收到的值
+            expected_tensor = torch.full_like(recv_tensor, expected_value)
+            
+            if torch.allclose(recv_tensor, expected_tensor):
+                logger.info(f"[Rank {ep_rank}] ✅ Layer {layer_index}: Ring P2P success - received {recv_tensor[0].item()} from rank {prev_rank}")
+            else:
+                logger.error(f"[Rank {ep_rank}] ❌ Layer {layer_index}: Ring P2P failed - expected {expected_value}, got {recv_tensor[0].item()}")
+                raise RuntimeError("Ring P2P communication test failed!")
+
+        logger.info(f"[Rank {ep_rank}] ✅ Layer {layer_index}: Ring P2P test completed successfully for all {ep_group.size()} ranks.")
+    else:
+        logger.info(f"[Rank {ep_rank}] Layer {layer_index}: Skipping dummy P2P (only runs on layer 0)")
     
-    # Skip real operations
-    # if p2p_ops:
-    #     reqs = batch_isend_irecv(p2p_ops)
-    #     for req in reqs:
-    #         req.wait()
-    
-    # Skip real operations for now
-    # if p2p_ops:
-    #     reqs = batch_isend_irecv(p2p_ops)
-    #     for req in reqs:
-    #         req.wait()
+    # Execute real P2P operations (启用正常P2P流程)
+    if p2p_ops:
+        logger.info(f"[Rank {ep_rank}] Layer {layer_index}: Executing {len(p2p_ops)} real P2P operations...")
+        reqs = batch_isend_irecv(p2p_ops)
+        for req in reqs:
+            req.wait()
+        logger.info(f"[Rank {ep_rank}] Layer {layer_index}: Real P2P operations completed")
 
     # 5. Copy the weights from the buffer back to the original weights.
     for dst in range(num_local_experts):
@@ -474,6 +474,7 @@ def rearrange_expert_weights_inplace(
             expert_weights[layer],
             expert_weights_buffer,
             ep_group,
+            layer_index=layer,
         )
         logger.info("[Expert Weights] (rank %d) Layer %d/%d shuffling completed", ep_rank, layer + 1, num_moe_layers)
     
