@@ -1369,6 +1369,12 @@ class DPLBAsyncMPClient(DPAsyncMPClient):
             "[Scale Up Debug] All %d reconfigure messages queued, starting engine creation",
             len(reconfig_futures)
         )
+        
+        # CRITICAL: Give the event loop a chance to start executing the tasks we just created
+        # Without this, the tasks won't run until much later
+        logger.info("[Scale Up Debug] Yielding to event loop to start tasks...")
+        await asyncio.sleep(0)
+        logger.info("[Scale Up Debug] Event loop yielded, tasks should be running now")
 
         # Phase 2: Create new engines now that reconfig messages have been sent
         # self.resources.engine_manager is guaranteed to be
