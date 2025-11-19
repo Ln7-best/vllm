@@ -229,7 +229,11 @@ def shuffle_layer(
         ]
 
     # 4. Execute the P2P operations. The real communication happens here.
-    if p2p_ops:
+    # CRITICAL: ALL ranks must participate in batch_isend_irecv if it's the first collective call
+    # PyTorch docs: "all ranks of the group must participate in this API call; otherwise, the behavior is undefined"
+    
+    # Force all ranks to call batch_isend_irecv, even if they have no P2P operations
+    if True:  # Always call batch_isend_irecv, regardless of p2p_ops
         # P2P diagnosis logging
         send_count = recv_count = 0
         for i, op in enumerate(p2p_ops):
@@ -323,7 +327,20 @@ def shuffle_layer(
         
         logger.info("[shuffle_layer] (rank %d) All P2P operations completed successfully!", ep_rank)
     else:
-        logger.info("[shuffle_layer] (rank %d) No P2P operations needed", ep_rank)
+        logger.info("[shuffle_layer] (rank %d) No P2P operations, but must participate in batch_isend_irecv", ep_rank)
+        
+        # CRITICAL: Even ranks with no P2P ops must call batch_isend_irecv for collective behavior
+        # Set GPU device (required for NCCL PG backend)
+        if torch.cuda.is_available():
+            current_device = torch.cuda.current_device()
+            torch.cuda.set_device(current_device)
+            torch.cuda.synchronize()
+            logger.info("[shuffle_layer] (rank %d) GPU device set to %d for empty batch_isend_irecv", ep_rank, current_device)
+        
+        # Call batch_isend_irecv with empty p2p_ops list
+        logger.info("[shuffle_layer] (rank %d) Calling batch_isend_irecv with empty operations...", ep_rank)
+        reqs = batch_isend_irecv([])  # Empty list but still participate
+        logger.info("[shuffle_layer] (rank %d) batch_isend_irecv completed with %d requests", ep_rank, len(reqs))
 
 
     # 5. Copy the weights from the buffer back to the original weights.
