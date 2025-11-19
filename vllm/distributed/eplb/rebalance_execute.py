@@ -229,13 +229,79 @@ def shuffle_layer(
 
     # We need to sort here to match send/recv
     for expert, dst in sorted(experts_recv_loc.items()):
+        logger.info("[shuffle_layer] (rank %d) ===== DEBUGGING EXPERT %d =====", ep_rank, expert)
+        
+        # DIAGNOSTIC 1: Check global index arrays for this expert
+        logger.info("[shuffle_layer] (rank %d) Expert %d - Searching in old_indices (len=%d):", 
+                   ep_rank, expert, len(old_indices))
+        old_expert_positions = [i for i, exp_id in enumerate(old_indices) if exp_id == expert]
+        logger.info("[shuffle_layer] (rank %d) Expert %d found at positions in old_indices: %s", 
+                   ep_rank, expert, old_expert_positions[:20])  # Show first 20 positions
+        
+        logger.info("[shuffle_layer] (rank %d) Expert %d - Searching in new_indices (len=%d):", 
+                   ep_rank, expert, len(new_indices))
+        new_expert_positions = [i for i, exp_id in enumerate(new_indices) if exp_id == expert]
+        logger.info("[shuffle_layer] (rank %d) Expert %d found at positions in new_indices: %s", 
+                   ep_rank, expert, new_expert_positions[:20])
+        
         ranks_to_send, ranks_to_recv = get_ep_ranks_with_expert(
             expert,
             num_local_experts,
             old_indices,
             new_indices,
         )
+        
+        # DIAGNOSTIC 2: Analyze get_ep_ranks_with_expert results
+        logger.info("[shuffle_layer] (rank %d) Expert %d - get_ep_ranks_with_expert results:", ep_rank, expert)
+        logger.info("[shuffle_layer] (rank %d) Expert %d - ranks_to_send: %s", ep_rank, expert, ranks_to_send)
+        logger.info("[shuffle_layer] (rank %d) Expert %d - ranks_to_recv: %s", ep_rank, expert, ranks_to_recv)
 
+        # **BUG FIX**: Handle edge case where no ranks need to send this expert
+        # This can happen with new engines in elastic scale up where old_indices are all -1
+        if len(ranks_to_send) == 0:
+            logger.error("[shuffle_layer] (rank %d) ⚠️  CRITICAL: Expert %d has no senders!", ep_rank, expert)
+            logger.error("[shuffle_layer] (rank %d) This means NO existing rank has expert %d in their old_indices", ep_rank, expert)
+            
+            # DIAGNOSTIC 3: Deep dive into rank expert distribution
+            logger.error("[shuffle_layer] (rank %d) === RANK EXPERT DISTRIBUTION ANALYSIS ===", ep_rank)
+            for rank in range(5):  # Check all 5 ranks (0,1,2,3,4)
+                start_pos = rank * num_local_experts
+                end_pos = start_pos + num_local_experts
+                if start_pos < len(old_indices):
+                    rank_old_experts = old_indices[start_pos:end_pos]
+                    unique_old_experts = sorted(list(set(rank_old_experts)))
+                    expert_in_rank = expert in rank_old_experts
+                    logger.error("[shuffle_layer] (rank %d) Rank %d old experts (pos %d-%d): %s [HAS_EXPERT_%d: %s]", 
+                                ep_rank, rank, start_pos, end_pos-1, 
+                                unique_old_experts[:10], expert, expert_in_rank)
+                else:
+                    logger.error("[shuffle_layer] (rank %d) Rank %d: OUT OF RANGE (start_pos=%d >= len=%d)", 
+                                ep_rank, rank, start_pos, len(old_indices))
+            
+            # DIAGNOSTIC 4: Expert distribution summary
+            logger.error("[shuffle_layer] (rank %d) Expert %d distribution in old_indices:", ep_rank, expert)
+            expert_count_by_rank = {}
+            for i, exp_id in enumerate(old_indices):
+                if exp_id == expert:
+                    rank_owner = i // num_local_experts
+                    expert_count_by_rank[rank_owner] = expert_count_by_rank.get(rank_owner, 0) + 1
+            logger.error("[shuffle_layer] (rank %d) Expert %d count by rank: %s (total_positions: %d)", 
+                        ep_rank, expert, expert_count_by_rank, len(old_expert_positions))
+            
+            # DIAGNOSTIC 5: Sample old_indices content around expert positions
+            if old_expert_positions:
+                logger.error("[shuffle_layer] (rank %d) Sample old_indices around expert %d positions:", ep_rank, expert)
+                for pos in old_expert_positions[:5]:  # Show first 5 positions
+                    start_sample = max(0, pos - 2)
+                    end_sample = min(len(old_indices), pos + 3)
+                    sample = old_indices[start_sample:end_sample]
+                    logger.error("[shuffle_layer] (rank %d) old_indices[%d:%d] = %s (expert %d at pos %d)", 
+                                ep_rank, start_sample, end_sample, sample, expert, pos)
+            
+            logger.error("[shuffle_layer] (rank %d) === END ANALYSIS ===", ep_rank)
+            # Skip this expert - it cannot be received if no one is sending it
+            continue
+        
         # Calculate the rank to recv by this rank
         num_dst_per_sender = len(ranks_to_recv) // len(ranks_to_send)
         recver_pos = ranks_to_recv.index(ep_rank)
