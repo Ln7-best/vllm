@@ -131,26 +131,20 @@ def shuffle_layer(
     # Only log for layer 0 to reduce verbosity
     log_this_layer = (current_layer == 0)
     
-    # Handle elastic scale up: extend old_indices if shapes don't match
-    if len(old_indices) != len(new_indices):
-        if log_this_layer:
-            logger.info(
-                "[shuffle_layer] (rank %d) Scale up detected: old_indices length %d != new_indices length %d", 
-                ep_rank, len(old_indices), len(new_indices)
-            )
-        
-        # Convert to list if it's not already (for mutability)
-        old_indices = list(old_indices)
-        
-        # Extend old_indices with -1 to match new_indices length
-        missing_count = len(new_indices) - len(old_indices)
-        old_indices.extend([-1] * missing_count)
-        
-        if log_this_layer:
-            logger.info(
-                "[shuffle_layer] (rank %d) Extended old_indices: added %d entries with -1 (new length: %d)", 
-                ep_rank, missing_count, len(old_indices)
-            )
+    # Add logging to confirm -1 filling behavior
+    if log_this_layer:
+        logger.info(
+            "[shuffle_layer] (rank %d) Input indices - old_indices len=%d, new_indices len=%d", 
+            ep_rank, len(old_indices), len(new_indices)
+        )
+        logger.info(
+            "[shuffle_layer] (rank %d) old_indices sample: %s", 
+            ep_rank, old_indices[:20] if len(old_indices) > 20 else old_indices
+        )
+        logger.info(
+            "[shuffle_layer] (rank %d) new_indices sample: %s", 
+            ep_rank, new_indices[:20] if len(new_indices) > 20 else new_indices
+        )
     
     current_ep_group = get_ep_group()
     ep_world_size = current_ep_group.world_size
@@ -561,8 +555,23 @@ def _map_old_expert_indices_with_rank_mapping(
         dtype=old_global_expert_indices.dtype,
         device=old_global_expert_indices.device,
     )
+    
+    logger.info(
+        "[_map_old_expert_indices] Scale transformation: old_ep_size=%d -> new_ep_size=%d", 
+        old_ep_size, new_ep_size
+    )
+    logger.info(
+        "[_map_old_expert_indices] Tensor sizes: (%d,%d) -> (%d,%d)", 
+        num_layers, old_num_physical_experts, num_layers, new_num_physical_experts
+    )
+    logger.info("[_map_old_expert_indices] rank_mapping: %s", rank_mapping)
+    logger.info(
+        "[_map_old_expert_indices] Created mapped_expert_indices filled with -1, shape: %s", 
+        mapped_expert_indices.shape
+    )
 
     # Handle rank mapping (scale up/down with rank changes)
+    mapped_ranks = []
     for old_rank in range(old_ep_size):
         new_rank = rank_mapping.get(old_rank)
         if new_rank is not None and new_rank >= 0 and new_rank < new_ep_size:
@@ -575,8 +584,21 @@ def _map_old_expert_indices_with_rank_mapping(
             mapped_expert_indices[:, new_start_idx:new_end_idx] = (
                 old_global_expert_indices[:, old_start_idx:old_end_idx]
             )
+            mapped_ranks.append(f"old_rank_{old_rank}->new_rank_{new_rank}")
         # If new_rank is None or >= new_ep_size, the experts remain -1
         # (scale down case)
+        else:
+            logger.info("[_map_old_expert_indices] old_rank %d -> unmapped (stays -1)", old_rank)
+    
+    logger.info("[_map_old_expert_indices] Mapped ranks: %s", mapped_ranks)
+    
+    # Log the final result to see -1 distribution
+    sample_layer = mapped_expert_indices[0] if num_layers > 0 else []
+    neg_ones_count = (sample_layer == -1).sum().item() if len(sample_layer) > 0 else 0
+    logger.info(
+        "[_map_old_expert_indices] Layer 0 sample: -1 count=%d/%d, first 20 values: %s", 
+        neg_ones_count, len(sample_layer), sample_layer[:20].tolist() if len(sample_layer) > 0 else []
+    )
 
     return mapped_expert_indices
 
