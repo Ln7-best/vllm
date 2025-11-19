@@ -239,7 +239,7 @@ def shuffle_layer(
         if ep_rank == 0:
             # Rank 0 sends to rank 1
             tensor = torch.ones(10, dtype=torch.float32, device=device) * 123.0
-            dummy_p2p_ops.append(P2POp(torch.distributed.isend, tensor, get_global_rank(ep_group, 1)))
+            dummy_p2p_ops.append(P2POp(torch.distributed.isend, tensor, get_global_rank(ep_group, 4)))
         elif ep_rank == 4:
             # Rank 1 receives from rank 0
             tensor = torch.zeros(10, dtype=torch.float32, device=device)
