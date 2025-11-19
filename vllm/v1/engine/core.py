@@ -1279,8 +1279,20 @@ class DPEngineCoreProc(EngineCoreProc):
     def reinitialize_distributed(
         self, reconfig_request: ReconfigureDistributedRequest
     ) -> None:
+        logger.info(
+            "[Reconfig] Received reinitialize_distributed request (current dp_rank=%d, current dp_size=%d, new dp_size=%d)",
+            self.dp_rank,
+            self.vllm_config.parallel_config.data_parallel_size,
+            reconfig_request.new_data_parallel_size
+        )
+        
+        logger.info("[Reconfig] Destroying old DP process group...")
         stateless_destroy_torch_distributed_process_group(self.dp_group)
+        logger.info("[Reconfig] Old DP process group destroyed")
+        
+        logger.info("[Reconfig] Shutting down engine...")
         self.shutdown()
+        logger.info("[Reconfig] Engine shutdown complete")
 
         parallel_config = self.vllm_config.parallel_config
         old_dp_size = parallel_config.data_parallel_size
@@ -1298,15 +1310,30 @@ class DPEngineCoreProc(EngineCoreProc):
         parallel_config.data_parallel_master_port = (
             reconfig_request.new_data_parallel_master_port
         )
+        
+        logger.info(
+            "[Reconfig] Updated config: dp_size=%d, dp_rank=%d, master=%s:%d",
+            parallel_config.data_parallel_size,
+            parallel_config.data_parallel_rank,
+            parallel_config.data_parallel_master_ip,
+            parallel_config.data_parallel_master_port
+        )
+        
         if reconfig_request.new_data_parallel_rank != -2:
             self.dp_rank = parallel_config.data_parallel_rank
+            logger.info("[Reconfig] Initializing new DP process group...")
             self.dp_group = parallel_config.stateless_init_dp_group()
+            logger.info("[Reconfig] New DP process group initialized")
         reconfig_request.new_data_parallel_master_port = (
             parallel_config.data_parallel_master_port
         )
 
+        logger.info("[Reconfig] Reinitializing model executor...")
         self.model_executor.reinitialize_distributed(reconfig_request)
+        logger.info("[Reconfig] Model executor reinitialized")
+        
         if reconfig_request.new_data_parallel_size > old_dp_size:
+            logger.info("[Reconfig] Scale up detected, syncing KV cache memory...")
             assert self.available_gpu_memory_for_kv_cache > 0
             # pass available_gpu_memory_for_kv_cache from existing
             # engine-cores to new engine-cores so they can directly
@@ -1314,9 +1341,14 @@ class DPEngineCoreProc(EngineCoreProc):
             ParallelConfig.sync_kv_cache_memory_size(
                 self.dp_group, self.available_gpu_memory_for_kv_cache
             )
+            logger.info("[Reconfig] KV cache memory synced")
+            
             # NOTE(yongji): newly joined workers require dummy_run even
             # CUDA graph is not used
+            logger.info("[Reconfig] Running compile_or_warm_up_model...")
             self.model_executor.collective_rpc("compile_or_warm_up_model")
+            logger.info("[Reconfig] compile_or_warm_up_model completed")
+            
         if (
             reconfig_request.new_data_parallel_rank
             == ReconfigureRankType.SHUTDOWN_CURRENT_RANK
@@ -1325,7 +1357,8 @@ class DPEngineCoreProc(EngineCoreProc):
             logger.info("DPEngineCoreProc %s shutdown", self.dp_rank)
         else:
             logger.info(
-                "Distributed environment reinitialized for DP rank %s", self.dp_rank
+                "[Reconfig] Distributed environment reinitialized successfully for DP rank %s", 
+                self.dp_rank
             )
 
 
