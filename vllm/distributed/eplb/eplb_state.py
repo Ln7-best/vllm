@@ -588,10 +588,6 @@ class EplbState:
         else:
             assert execute_shuffle
             global_expert_load_windows = global_expert_loads
-            
-        if is_main_rank:
-            load_preprocessing_time = (time.time() - load_preprocessing_start) * 1000
-            logger.info("[EPLB Timing] Load Information Preprocessing: %.2fms", load_preprocessing_time)
 
         # TODO(bowen): Treat differently for prefill and decode nodes
         eplb_model_state = next(iter(self.model_states.values()))
@@ -631,6 +627,13 @@ class EplbState:
                 global_expert_load_window.shape, num_replicas, num_groups,
                 num_nodes, num_gpus
             )
+            # logger.info(
+            #     "[eplb_state.rearrange] About to call rebalance_experts with: "
+            #     "global_expert_load_window.shape=%s, num_replicas=%d, num_groups=%d, "
+            #     "num_nodes=%d, num_gpus=%d",
+            #     global_expert_load_window.shape, num_replicas, num_groups,
+            #     num_nodes, num_gpus
+            # )
             (
                 new_physical_to_logical_map,
                 new_logical_to_physical_map,
@@ -645,6 +648,9 @@ class EplbState:
             logger.info(
                 "[eplb_state.rearrange] rebalance_experts returned successfully"
             )
+            # logger.info(
+            #     "[eplb_state.rearrange] rebalance_experts returned successfully"
+            # )
 
             # Update expert weights
             rearrange_expert_weights_inplace(
