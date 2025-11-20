@@ -594,6 +594,7 @@ class EplbState:
         logger.info("[EPLB Timing] Load Information Preprocessing: %.2fms", load_preprocessing_time)
 
         # TODO(bowen): Treat differently for prefill and decode nodes
+        rebalance_start = time.time()
         eplb_model_state = next(iter(self.model_states.values()))
         model = eplb_model_state.model
         num_replicas = model.num_physical_experts
@@ -649,6 +650,9 @@ class EplbState:
                 num_nodes,
                 num_gpus,
             )
+
+            rebalance_time = (time.time() - rebalance_start) * 1000
+            logger.info("[EPLB Timing] Expert Rebalance Algorithm: %.2fms", rebalance_time)
             logger.info(
                 "[eplb_state.rearrange] rebalance_experts returned successfully"
             )
@@ -698,6 +702,7 @@ class EplbState:
                     new_logical_to_physical_map
                 )
                 eplb_model_state.logical_replica_count.copy_(new_logical_replica_count)
+
 
         if is_main_rank:
             assert time_start is not None
