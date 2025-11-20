@@ -1272,9 +1272,15 @@ class DPEngineCoreProc(EngineCoreProc):
     def reinitialize_distributed(
         self, reconfig_request: ReconfigureDistributedRequest
     ) -> None:
+        # Timer 1: Cleanup and shutdown operations
+        cleanup_start_time = time.time()
         stateless_destroy_torch_distributed_process_group(self.dp_group)
         self.shutdown()
+        cleanup_time = (time.time() - cleanup_start_time) * 1000  # Convert to ms
+        logger.info("[Engine Core Reinit Timing] Cleanup & Shutdown: %.2fms", cleanup_time)
 
+        # Timer 2: Parallel configuration update
+        config_start_time = time.time()
         parallel_config = self.vllm_config.parallel_config
         old_dp_size = parallel_config.data_parallel_size
         parallel_config.data_parallel_size = reconfig_request.new_data_parallel_size
@@ -1297,8 +1303,14 @@ class DPEngineCoreProc(EngineCoreProc):
         reconfig_request.new_data_parallel_master_port = (
             parallel_config.data_parallel_master_port
         )
+        config_time = (time.time() - config_start_time) * 1000  # Convert to ms
+        logger.info("[Engine Core Reinit Timing] Config Update: %.2fms", config_time)
 
+        # Timer 3: Model executor reinitialization
+        executor_start_time = time.time()
         self.model_executor.reinitialize_distributed(reconfig_request)
+        executor_time = (time.time() - executor_start_time) * 1000  # Convert to ms
+        logger.info("[Engine Core Reinit Timing] Model Executor Reinit: %.2fms", executor_time)
         if reconfig_request.new_data_parallel_size > old_dp_size:
             assert self.available_gpu_memory_for_kv_cache > 0
             # pass available_gpu_memory_for_kv_cache from existing
