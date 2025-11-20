@@ -1302,6 +1302,8 @@ def initialize_model_parallel(
     with a total of 16 GPUs, rank 0 to 7 belong to the first box and
     ranks 8 to 15 belong to the second box.
     """
+    import time
+    
     # Get world size and rank. Ensure some consistencies.
     assert torch.distributed.is_initialized()
     world_size: int = torch.distributed.get_world_size()
@@ -1328,7 +1330,8 @@ def initialize_model_parallel(
         -1, data_parallel_size, pipeline_model_parallel_size, tensor_model_parallel_size
     )  # noqa
 
-    # Build the tensor model-parallel groups.
+    # Timer 1: Build the tensor model-parallel groups
+    tp_group_start = time.time()
     global _TP
     assert _TP is None, "tensor model parallel group is already initialized"
     group_ranks = all_ranks.view(-1, tensor_model_parallel_size).unbind(0)
@@ -1342,8 +1345,11 @@ def initialize_model_parallel(
         use_message_queue_broadcaster=True,
         group_name="tp",
     )
+    tp_group_time = (time.time() - tp_group_start) * 1000
+    logger.info("[Model Parallel Init Timing] TP Group Creation: %.2fms", tp_group_time)
 
-    # Build the DCP model-parallel groups.
+    # Timer 2: Build the DCP model-parallel groups
+    dcp_group_start = time.time()
     global _DCP
     assert _DCP is None, "decode context model parallel group is already initialized"
     # Note(hc): In the current implementation of decode context parallel,
@@ -1359,8 +1365,11 @@ def initialize_model_parallel(
         use_message_queue_broadcaster=True,
         group_name="dcp",
     )
+    dcp_group_time = (time.time() - dcp_group_start) * 1000
+    logger.info("[Model Parallel Init Timing] DCP Group Creation: %.2fms", dcp_group_time)
 
-    # Build the pipeline model-parallel groups.
+    # Timer 3: Build the pipeline model-parallel groups
+    pp_group_start = time.time()
     global _PP
     assert _PP is None, "pipeline model parallel group is already initialized"
     group_ranks = (
@@ -1370,7 +1379,11 @@ def initialize_model_parallel(
     _PP = init_model_parallel_group(
         group_ranks, get_world_group().local_rank, backend, group_name="pp"
     )
+    pp_group_time = (time.time() - pp_group_start) * 1000
+    logger.info("[Model Parallel Init Timing] PP Group Creation: %.2fms", pp_group_time)
 
+    # Timer 4: Build the data model-parallel groups
+    dp_group_start = time.time()
     global _DP
     assert _DP is None, "data parallel group is already initialized"
     group_ranks = all_ranks.transpose(1, 3).reshape(-1, data_parallel_size).unbind(0)
@@ -1378,7 +1391,11 @@ def initialize_model_parallel(
     _DP = init_model_parallel_group(
         group_ranks, get_world_group().local_rank, backend, group_name="dp"
     )
+    dp_group_time = (time.time() - dp_group_start) * 1000
+    logger.info("[Model Parallel Init Timing] DP Group Creation: %.2fms", dp_group_time)
 
+    # Timer 5: Build the expert model-parallel groups
+    ep_group_start = time.time()
     global _EP
     assert _EP is None, "expert parallel group is already initialized"
     group_ranks = (
@@ -1390,6 +1407,12 @@ def initialize_model_parallel(
     _EP = init_model_parallel_group(
         group_ranks, get_world_group().local_rank, backend, group_name="ep"
     )
+    ep_group_time = (time.time() - ep_group_start) * 1000
+    logger.info("[Model Parallel Init Timing] EP Group Creation: %.2fms", ep_group_time)
+
+    # Total timing summary
+    total_group_time = tp_group_time + dcp_group_time + pp_group_time + dp_group_time + ep_group_time
+    logger.info("[Model Parallel Init Timing] Total Group Creation: %.2fms", total_group_time)
 
     logger.info_once(
         "rank %s in world size %s is assigned as "
