@@ -527,6 +527,8 @@ class EplbState:
             logger.info("Rearranging experts %s...", "(profile)" if is_profile else "")
 
         if global_expert_loads is None:
+            # Timer: Load information preprocessing
+            load_preprocessing_start = time.perf_counter()
             # Map the physical expert load to global logical experts
             global_expert_load_windows = []
             if not execute_shuffle:
@@ -584,11 +586,19 @@ class EplbState:
                     )
             if not execute_shuffle:
                 return global_expert_load_windows
+
         else:
             assert execute_shuffle
             global_expert_load_windows = global_expert_loads
+            
+        if is_main_rank:
+            load_preprocessing_time = (time.perf_counter() - load_preprocessing_start) * 1000
+            logger.info("[EPLB Timing] Load Information Preprocessing: %.2fms", load_preprocessing_time)
 
         # TODO(bowen): Treat differently for prefill and decode nodes
+        # Timer: Rebalance calculation
+        rebalance_start = time.perf_counter()
+        
         eplb_model_state = next(iter(self.model_states.values()))
         model = eplb_model_state.model
         num_replicas = model.num_physical_experts
@@ -637,11 +647,17 @@ class EplbState:
                 num_nodes,
                 num_gpus,
             )
+        
+        rebalance_time = (time.perf_counter() - rebalance_start) * 1000
+        if is_main_rank:
+            logger.info("[EPLB Timing] Rebalance Calculation: %.2fms", rebalance_time)
             # logger.info(
             #     "[eplb_state.rearrange] rebalance_experts returned successfully"
             # )
 
             # Update expert weights
+            # Timer: Expert weights transfer
+            weights_transfer_start = time.perf_counter()
             rearrange_expert_weights_inplace(
                 eplb_model_state.physical_to_logical_map,
                 new_physical_to_logical_map,
@@ -650,8 +666,13 @@ class EplbState:
                 is_profile,
                 rank_mapping,
             )
+            weights_transfer_time = (time.perf_counter() - weights_transfer_start) * 1000
+            if is_main_rank:
+                logger.info("[EPLB Timing] Expert Weights Transfer: %.2fms", weights_transfer_time)
 
             if not is_profile:
+                # Timer: State update
+                state_update_start = time.perf_counter()
                 if (
                     eplb_model_state.physical_to_logical_map.shape[1]
                     != new_physical_to_logical_map.shape[1]
@@ -683,6 +704,10 @@ class EplbState:
                     new_logical_to_physical_map
                 )
                 eplb_model_state.logical_replica_count.copy_(new_logical_replica_count)
+                
+                state_update_time = (time.perf_counter() - state_update_start) * 1000
+                if is_main_rank:
+                    logger.info("[EPLB Timing] State Update: %.2fms", state_update_time)
 
         if is_main_rank:
             assert time_start is not None

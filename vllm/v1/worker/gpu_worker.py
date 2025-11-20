@@ -659,10 +659,10 @@ class Worker(WorkerBase):
         )
         torch.cuda.synchronize()
         eplb_time = (time.time() - eplb_start_time) * 1000  # 转换为毫秒
-        if get_ep_group().rank == 0:
-            logger.info("[Elastic EP Scale Down Timing] EPLB Rearrangement: %.2fms", eplb_time)
-        if get_ep_group().rank == 0:
-            logger.info("[Elastic EP] Expert resharding completed!")
+        # if get_ep_group().rank == 0:
+        logger.info("[Elastic EP Scale Down Timing] EPLB Rearrangement: %.2fms", eplb_time)
+        # if get_ep_group().rank == 0:
+        logger.info("[Elastic EP] Expert resharding completed!")
 
     def _eplb_after_scale_up(
         self,
