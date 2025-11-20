@@ -917,22 +917,51 @@ def init_worker_distributed_environment(
     backend: str = "nccl",
 ) -> None:
     """Initialize the distributed environment."""
+    import time
+    from vllm.logger import init_logger
+    
+    logger = init_logger(__name__)
     parallel_config = vllm_config.parallel_config
     from vllm.model_executor.layers.batch_invariant import init_batch_invariance
 
+    # Timer 1: Batch Invariance Initialization
+    batch_invariance_start = time.time()
     init_batch_invariance()
-    set_custom_all_reduce(not parallel_config.disable_custom_all_reduce)
+    batch_invariance_time = (time.time() - batch_invariance_start) * 1000
+    logger.info("[Worker Distributed Init Timing] Batch Invariance Init: %.2fms", batch_invariance_time)
 
+    # Timer 2: Custom All-Reduce Configuration
+    all_reduce_config_start = time.time()
+    set_custom_all_reduce(not parallel_config.disable_custom_all_reduce)
+    all_reduce_config_time = (time.time() - all_reduce_config_start) * 1000
+    logger.info("[Worker Distributed Init Timing] Custom All-Reduce Config: %.2fms", all_reduce_config_time)
+
+    # Timer 3: Distributed Environment Initialization (Usually the most expensive)
+    distributed_env_start = time.time()
     init_distributed_environment(
         parallel_config.world_size, rank, distributed_init_method, local_rank, backend
     )
+    distributed_env_time = (time.time() - distributed_env_start) * 1000
+    logger.info("[Worker Distributed Init Timing] Distributed Environment Init: %.2fms", distributed_env_time)
 
+    # Timer 4: Model Parallel Initialization
+    model_parallel_start = time.time()
     ensure_model_parallel_initialized(
         parallel_config.tensor_parallel_size,
         parallel_config.pipeline_parallel_size,
         parallel_config.decode_context_parallel_size,
     )
+    model_parallel_time = (time.time() - model_parallel_start) * 1000
+    logger.info("[Worker Distributed Init Timing] Model Parallel Init: %.2fms", model_parallel_time)
 
+    # Timer 5: EC Transfer Initialization
+    ec_transfer_start = time.time()
     # Init ec connector here before KV caches caches init
     # NOTE: We do not init KV caches for Encoder-only instance in EPD disagg mode
     ensure_ec_transfer_initialized(vllm_config)
+    ec_transfer_time = (time.time() - ec_transfer_start) * 1000
+    logger.info("[Worker Distributed Init Timing] EC Transfer Init: %.2fms", ec_transfer_time)
+
+    # Total timing summary
+    total_time = batch_invariance_time + all_reduce_config_time + distributed_env_time + model_parallel_time + ec_transfer_time
+    logger.info("[Worker Distributed Init Timing] Total: %.2fms", total_time)
