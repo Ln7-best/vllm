@@ -619,13 +619,13 @@ class EplbState:
             self.model_states.values(), global_expert_load_windows
         ):
             # Get new expert mappings for the model
-            logger.info(
-                "[eplb_state.rearrange] About to call rebalance_experts with: "
-                "global_expert_load_window.shape=%s, num_replicas=%d, num_groups=%d, "
-                "num_nodes=%d, num_gpus=%d",
-                global_expert_load_window.shape, num_replicas, num_groups,
-                num_nodes, num_gpus
-            )
+            # logger.info(
+            #     "[eplb_state.rearrange] About to call rebalance_experts with: "
+            #     "global_expert_load_window.shape=%s, num_replicas=%d, num_groups=%d, "
+            #     "num_nodes=%d, num_gpus=%d",
+            #     global_expert_load_window.shape, num_replicas, num_groups,
+            #     num_nodes, num_gpus
+            # )
             (
                 new_physical_to_logical_map,
                 new_logical_to_physical_map,
@@ -637,9 +637,9 @@ class EplbState:
                 num_nodes,
                 num_gpus,
             )
-            logger.info(
-                "[eplb_state.rearrange] rebalance_experts returned successfully"
-            )
+            # logger.info(
+            #     "[eplb_state.rearrange] rebalance_experts returned successfully"
+            # )
 
             # Update expert weights
             rearrange_expert_weights_inplace(

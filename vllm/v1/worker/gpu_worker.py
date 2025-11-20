@@ -816,6 +816,10 @@ class Worker(WorkerBase):
     def reinitialize_distributed(
         self, reconfig_request: ReconfigureDistributedRequest
     ) -> None:
+        import time
+        worker_reinit_start_time = time.time()
+        logger.info("[GPU Worker] reinitialize_distributed started")
+        
         from vllm.config import set_current_vllm_config
         from vllm.distributed.parallel_state import (
             cleanup_dist_env_and_memory,
@@ -832,7 +836,11 @@ class Worker(WorkerBase):
         if new_ep_size < old_ep_size:
             self._eplb_before_scale_down(old_ep_size, new_ep_size)
 
+        # Timer 1: Cleanup distributed environment
+        cleanup_start_time = time.time()
         cleanup_dist_env_and_memory()
+        cleanup_time = (time.time() - cleanup_start_time) * 1000
+        logger.info("[GPU Worker Reinit Timing] Cleanup Dist Env: %.2fms", cleanup_time)
 
         if (
             reconfig_request.new_data_parallel_rank
@@ -842,8 +850,14 @@ class Worker(WorkerBase):
             # shutdown
             return
 
+        # Timer 2: Reconfigure parallel config
+        parallel_config_start_time = time.time()
         self._reconfigure_parallel_config(reconfig_request)
+        parallel_config_time = (time.time() - parallel_config_start_time) * 1000
+        logger.info("[GPU Worker Reinit Timing] Reconfigure Parallel Config: %.2fms", parallel_config_time)
 
+        # Timer 3: Initialize worker distributed environment
+        init_worker_start_time = time.time()
         with set_current_vllm_config(self.vllm_config):
             init_worker_distributed_environment(
                 self.vllm_config,
@@ -851,12 +865,21 @@ class Worker(WorkerBase):
                 self.distributed_init_method,
                 self.local_rank,
             )
+        init_worker_time = (time.time() - init_worker_start_time) * 1000
+        logger.info("[GPU Worker Reinit Timing] Init Worker Distributed Env: %.2fms", init_worker_time)
 
+        # Timer 4: Reconfigure MoE
+        reconfigure_moe_start_time = time.time()
         global_expert_loads = self._reconfigure_moe(old_ep_size, new_ep_size)
+        reconfigure_moe_time = (time.time() - reconfigure_moe_start_time) * 1000
+        logger.info("[GPU Worker Reinit Timing] Reconfigure MoE: %.2fms", reconfigure_moe_time)
 
         if new_ep_size > old_ep_size:
             assert global_expert_loads is not None
             self._eplb_after_scale_up(old_ep_size, new_ep_size, global_expert_loads)
+        
+        worker_reinit_time = (time.time() - worker_reinit_start_time) * 1000  # Convert to ms
+        logger.info("[GPU Worker Reinit Timing] Total: %.2fms", worker_reinit_time)
 
     def save_sharded_state(
         self,
