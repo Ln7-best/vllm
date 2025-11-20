@@ -523,12 +523,14 @@ class EplbState:
         is_main_rank = ep_rank == 0
         if is_main_rank:
             torch.cuda.synchronize()
-            time_start = time.perf_counter()
+            time_start = time.time()
             logger.info("Rearranging experts %s...", "(profile)" if is_profile else "")
 
+        load_preprocessing_start = None
         if global_expert_loads is None:
             # Timer: Load information preprocessing
-            load_preprocessing_start = time.perf_counter()
+            if is_main_rank:
+                load_preprocessing_start = time.time()
             # Map the physical expert load to global logical experts
             global_expert_load_windows = []
             if not execute_shuffle:
@@ -592,12 +594,14 @@ class EplbState:
             global_expert_load_windows = global_expert_loads
             
         if is_main_rank:
-            load_preprocessing_time = (time.perf_counter() - load_preprocessing_start) * 1000
+            load_preprocessing_time = (time.time() - load_preprocessing_start) * 1000
             logger.info("[EPLB Timing] Load Information Preprocessing: %.2fms", load_preprocessing_time)
 
         # TODO(bowen): Treat differently for prefill and decode nodes
         # Timer: Rebalance calculation
-        rebalance_start = time.perf_counter()
+        rebalance_start = None
+        if is_main_rank:
+            rebalance_start = time.time()
         
         eplb_model_state = next(iter(self.model_states.values()))
         model = eplb_model_state.model
@@ -648,8 +652,8 @@ class EplbState:
                 num_gpus,
             )
         
-        rebalance_time = (time.perf_counter() - rebalance_start) * 1000
-        if is_main_rank:
+        if is_main_rank and rebalance_start is not None:
+            rebalance_time = (time.time() - rebalance_start) * 1000
             logger.info("[EPLB Timing] Rebalance Calculation: %.2fms", rebalance_time)
             # logger.info(
             #     "[eplb_state.rearrange] rebalance_experts returned successfully"
@@ -657,7 +661,9 @@ class EplbState:
 
             # Update expert weights
             # Timer: Expert weights transfer
-            weights_transfer_start = time.perf_counter()
+            weights_transfer_start = None
+            if is_main_rank:
+                weights_transfer_start = time.time()
             rearrange_expert_weights_inplace(
                 eplb_model_state.physical_to_logical_map,
                 new_physical_to_logical_map,
@@ -666,13 +672,15 @@ class EplbState:
                 is_profile,
                 rank_mapping,
             )
-            weights_transfer_time = (time.perf_counter() - weights_transfer_start) * 1000
-            if is_main_rank:
+            if is_main_rank and weights_transfer_start is not None:
+                weights_transfer_time = (time.time() - weights_transfer_start) * 1000
                 logger.info("[EPLB Timing] Expert Weights Transfer: %.2fms", weights_transfer_time)
 
             if not is_profile:
                 # Timer: State update
-                state_update_start = time.perf_counter()
+                state_update_start = None
+                if is_main_rank:
+                    state_update_start = time.time()
                 if (
                     eplb_model_state.physical_to_logical_map.shape[1]
                     != new_physical_to_logical_map.shape[1]
@@ -705,14 +713,14 @@ class EplbState:
                 )
                 eplb_model_state.logical_replica_count.copy_(new_logical_replica_count)
                 
-                state_update_time = (time.perf_counter() - state_update_start) * 1000
-                if is_main_rank:
+                if is_main_rank and state_update_start is not None:
+                    state_update_time = (time.time() - state_update_start) * 1000
                     logger.info("[EPLB Timing] State Update: %.2fms", state_update_time)
 
         if is_main_rank:
             assert time_start is not None
             torch.cuda.synchronize()
-            time_end = time.perf_counter()
+            time_end = time.time()
             logger.info(
                 "Rearranged experts%sin %.2f seconds.",
                 " (profile) " if is_profile else " ",
