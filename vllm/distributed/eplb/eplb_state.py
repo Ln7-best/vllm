@@ -661,6 +661,7 @@ class EplbState:
             # )
 
             # Update expert weights
+            weights_transfer_start = time.time()
             rearrange_expert_weights_inplace(
                 eplb_model_state.physical_to_logical_map,
                 new_physical_to_logical_map,
@@ -669,6 +670,8 @@ class EplbState:
                 is_profile,
                 rank_mapping,
             )
+            weights_transfer_time = (time.time() - weights_transfer_start) * 1000
+            logger.info("[EPLB Timing] Expert Weights Transfer: %.2fms", weights_transfer_time)
 
             if not is_profile:
                 if (
