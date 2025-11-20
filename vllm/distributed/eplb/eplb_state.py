@@ -526,6 +526,7 @@ class EplbState:
             time_start = time.perf_counter()
             logger.info("Rearranging experts %s...", "(profile)" if is_profile else "")
 
+        load_preprocessing_start = time.time()
         if global_expert_loads is None:
             # Map the physical expert load to global logical experts
             global_expert_load_windows = []
@@ -588,6 +589,9 @@ class EplbState:
         else:
             assert execute_shuffle
             global_expert_load_windows = global_expert_loads
+        
+        load_preprocessing_time = (time.time() - load_preprocessing_start) * 1000
+        logger.info("[EPLB Timing] Load Information Preprocessing: %.2fms", load_preprocessing_time)
 
         # TODO(bowen): Treat differently for prefill and decode nodes
         eplb_model_state = next(iter(self.model_states.values()))
