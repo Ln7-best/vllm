@@ -858,7 +858,6 @@ class Worker(WorkerBase):
         """
         from vllm.distributed.parallel_state import get_ep_group
         from vllm.model_executor.layers.fused_moe.layer import FusedMoE
-        from vllm.model_executor.model_loader.utils import is_mixture_of_experts
         
         ep_rank = get_ep_group().rank
         logger.info("[MoE Config Sync] (rank %d) Starting post-scale-up MoE config synchronization...", ep_rank)
