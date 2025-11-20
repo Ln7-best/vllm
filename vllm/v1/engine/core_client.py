@@ -1355,6 +1355,10 @@ class DPLBAsyncMPClient(DPAsyncMPClient):
     ) -> None:
         """Scale down the data parallel size by shutting down and
         reconfiguring existing engine cores."""
+        import time
+        scale_down_start_time = time.time()
+        logger.info("[Elastic EP] Scale down started")
+        
         cur_data_parallel_size = len(self.core_engines)
 
         self.vllm_config.parallel_config.data_parallel_master_port = get_open_port()
@@ -1394,6 +1398,9 @@ class DPLBAsyncMPClient(DPAsyncMPClient):
         await self.first_req_send_socket.send(scale_down_marker)
 
         self.vllm_config.parallel_config.data_parallel_size = new_data_parallel_size
+        
+        scale_down_total_time = (time.time() - scale_down_start_time) * 1000  # 转换为毫秒
+        logger.info("[Elastic EP Scale Down Timing] Total: %.2fms", scale_down_total_time)
         logger.info(
             "[Elastic EP] Scale down completed, new data parallel size: %s",
             new_data_parallel_size,

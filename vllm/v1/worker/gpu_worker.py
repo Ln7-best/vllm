@@ -649,12 +649,18 @@ class Worker(WorkerBase):
             for old_ep_rank in range(old_ep_size)
         }
         assert self.model_runner.eplb_state is not None
+        
+        import time
+        eplb_start_time = time.time()
         self.model_runner.eplb_state.rearrange(
             execute_shuffle=True,
             global_expert_loads=None,
             rank_mapping=rank_mapping,
         )
         torch.cuda.synchronize()
+        eplb_time = (time.time() - eplb_start_time) * 1000  # 转换为毫秒
+        if get_ep_group().rank == 0:
+            logger.info("[Elastic EP Scale Down Timing] EPLB Rearrangement: %.2fms", eplb_time)
         if get_ep_group().rank == 0:
             logger.info("[Elastic EP] Expert resharding completed!")
 
