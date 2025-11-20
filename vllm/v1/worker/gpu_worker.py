@@ -845,6 +845,80 @@ class Worker(WorkerBase):
         logger.info("[MoE Reconfig] _reconfigure_moe completed")
         return global_expert_loads
 
+    def _sync_moe_config_after_scale_up(self) -> None:
+        """
+        Critical: Synchronize MoE configuration after expert redistribution.
+        
+        This method addresses the CUDA kernel index out-of-bounds error caused by
+        inconsistency between MoE configuration and actual expert mappings after
+        scale up. The issue occurs when:
+        1. All engines get updated MoE config with same num_experts
+        2. New engines have old_indices = [-1, -1, ...] from P2P deadlock fix
+        3. Configuration mismatch leads to "index out of bounds: 0 <= tmp23 < ks2"
+        """
+        from vllm.distributed.parallel_state import get_ep_group
+        from vllm.model_executor.layers.fused_moe.layer import FusedMoE
+        from vllm.model_executor.model_loader.utils import is_mixture_of_experts
+        
+        ep_rank = get_ep_group().rank
+        logger.info("[MoE Config Sync] (rank %d) Starting post-scale-up MoE config synchronization...", ep_rank)
+        
+        def get_moe_modules(model: torch.nn.Module) -> list[FusedMoE]:
+            return [
+                module
+                for module in model.modules()
+                if (
+                    module.__class__.__name__ == "FusedMoE"
+                    or module.__class__.__name__ == "SharedFusedMoE"
+                )
+            ]
+        
+        # Get actual expert mappings from EPLB state
+        assert self.model_runner.eplb_state is not None
+        eplb_model_state = next(iter(self.model_runner.eplb_state.model_states.values()))
+        
+        # Get actual number of available experts per engine
+        physical_to_logical_map = eplb_model_state.physical_to_logical_map
+        actual_num_physical_experts = physical_to_logical_map.shape[1]
+        actual_num_logical_experts = eplb_model_state.logical_replica_count.shape[1]
+        
+        logger.info("[MoE Config Sync] (rank %d) Actual experts: physical=%d, logical=%d", 
+                   ep_rank, actual_num_physical_experts, actual_num_logical_experts)
+        
+        # Update MoE modules with correct expert counts based on actual mappings
+        model_moe_modules = get_moe_modules(self.model_runner.model)
+        for module in model_moe_modules:
+            old_num_experts = module.moe_config.num_experts
+            old_global_num_experts = module.global_num_experts
+            
+            # Update to match actual logical expert distribution
+            module.moe_config.num_experts = actual_num_logical_experts
+            module.global_num_experts = actual_num_logical_experts
+            
+            logger.info("[MoE Config Sync] (rank %d) Updated MoE module: %d->%d experts, global: %d->%d", 
+                       ep_rank, old_num_experts, module.moe_config.num_experts,
+                       old_global_num_experts, module.global_num_experts)
+        
+        # Also update drafter model if exists
+        drafter_model = None
+        if hasattr(self.model_runner, "drafter") and hasattr(self.model_runner.drafter, "model"):
+            drafter_model = self.model_runner.drafter.model
+            
+        if drafter_model is not None:
+            try:
+                if is_mixture_of_experts(drafter_model):
+                    drafter_moe_modules = get_moe_modules(drafter_model)
+                    for module in drafter_moe_modules:
+                        module.moe_config.num_experts = actual_num_logical_experts
+                        module.global_num_experts = actual_num_logical_experts
+                    logger.info("[MoE Config Sync] (rank %d) Updated drafter MoE modules: %d experts", 
+                               ep_rank, actual_num_logical_experts)
+            except ImportError:
+                # is_mixture_of_experts might not be available in all versions
+                logger.warning("[MoE Config Sync] (rank %d) Could not check drafter MoE status", ep_rank)
+        
+        logger.info("[MoE Config Sync] (rank %d) MoE configuration synchronization completed", ep_rank)
+
     def reinitialize_distributed(
         self, reconfig_request: ReconfigureDistributedRequest
     ) -> None:
@@ -890,6 +964,8 @@ class Worker(WorkerBase):
         if new_ep_size > old_ep_size:
             assert global_expert_loads is not None
             self._eplb_after_scale_up(old_ep_size, new_ep_size, global_expert_loads)
+            # CRITICAL: Re-sync MoE configuration after expert redistribution
+            self._sync_moe_config_after_scale_up()
 
     def save_sharded_state(
         self,
