@@ -349,6 +349,101 @@ def shuffle_layer(
             for weight, buffer in zip(expert_weights, expert_weights_buffer):
                 weight[dst].copy_(buffer[src])
 
+    # ===== WEIGHT INTEGRITY CHECK FOR NEW ENGINES =====
+    import os
+    is_new_engine = os.environ.get('VLLM_ELASTIC_EP_SCALE_UP_LAUNCH') == '1'
+    
+    if is_new_engine:
+        logger.info(f"[Weight Integrity] (rank {ep_rank}) 🔍 STARTING comprehensive weight integrity check for NEW ENGINE...")
+        
+        # Check each expert weight
+        total_weights = 0
+        zero_weights = 0
+        non_zero_weights = 0
+        
+        for expert_idx in range(num_local_experts):
+            expert_global_idx = new_indices[local2global(expert_idx)] if expert_idx < len(new_indices) else -1
+            
+            logger.info(f"[Weight Integrity] (rank {ep_rank}) === Expert {expert_idx} (global_idx: {expert_global_idx}) ===")
+            
+            for weight_idx, weight_tensor in enumerate(expert_weights):
+                if expert_idx >= weight_tensor.shape[0]:
+                    logger.warning(f"[Weight Integrity] (rank {ep_rank}) Expert {expert_idx} exceeds weight tensor size {weight_tensor.shape[0]}")
+                    continue
+                    
+                expert_weight = weight_tensor[expert_idx]
+                
+                # Basic statistics
+                weight_min = expert_weight.min().item()
+                weight_max = expert_weight.max().item()
+                weight_mean = expert_weight.mean().item()
+                weight_std = expert_weight.std().item()
+                weight_norm = expert_weight.norm().item()
+                
+                # Count zeros and non-zeros
+                num_zeros = (expert_weight == 0).sum().item()
+                num_elements = expert_weight.numel()
+                num_non_zeros = num_elements - num_zeros
+                zero_ratio = num_zeros / num_elements
+                
+                total_weights += num_elements
+                zero_weights += num_zeros
+                non_zero_weights += num_non_zeros
+                
+                # Log detailed stats
+                logger.info(f"[Weight Integrity] (rank {ep_rank}) Weight {weight_idx}: shape={expert_weight.shape}")
+                logger.info(f"[Weight Integrity] (rank {ep_rank}) Stats: min={weight_min:.6f}, max={weight_max:.6f}, mean={weight_mean:.6f}, std={weight_std:.6f}")
+                logger.info(f"[Weight Integrity] (rank {ep_rank}) Norm: {weight_norm:.6f}")
+                logger.info(f"[Weight Integrity] (rank {ep_rank}) Zeros: {num_zeros}/{num_elements} ({zero_ratio:.2%})")
+                
+                # Check for problematic patterns
+                if num_zeros == num_elements:
+                    logger.error(f"[Weight Integrity] (rank {ep_rank}) ❌ Expert {expert_idx} Weight {weight_idx} is ALL ZEROS!")
+                elif zero_ratio > 0.9:
+                    logger.warning(f"[Weight Integrity] (rank {ep_rank}) ⚠️ Expert {expert_idx} Weight {weight_idx} is mostly zeros ({zero_ratio:.2%})")
+                elif weight_norm < 1e-6:
+                    logger.warning(f"[Weight Integrity] (rank {ep_rank}) ⚠️ Expert {expert_idx} Weight {weight_idx} has very small norm ({weight_norm:.2e})")
+                else:
+                    logger.info(f"[Weight Integrity] (rank {ep_rank}) ✅ Expert {expert_idx} Weight {weight_idx} looks healthy")
+        
+        # Overall summary
+        total_zero_ratio = zero_weights / total_weights if total_weights > 0 else 0
+        logger.info(f"[Weight Integrity] (rank {ep_rank}) 📊 OVERALL SUMMARY:")
+        logger.info(f"[Weight Integrity] (rank {ep_rank}) Total elements: {total_weights}")
+        logger.info(f"[Weight Integrity] (rank {ep_rank}) Zero elements: {zero_weights} ({total_zero_ratio:.2%})")
+        logger.info(f"[Weight Integrity] (rank {ep_rank}) Non-zero elements: {non_zero_weights} ({(1-total_zero_ratio):.2%})")
+        
+        if total_zero_ratio > 0.8:
+            logger.error(f"[Weight Integrity] (rank {ep_rank}) 🚨 CRITICAL: Over 80% of weights are ZERO!")
+        elif total_zero_ratio > 0.5:
+            logger.warning(f"[Weight Integrity] (rank {ep_rank}) ⚠️ WARNING: Over 50% of weights are zero")
+        else:
+            logger.info(f"[Weight Integrity] (rank {ep_rank}) ✅ Weight distribution looks reasonable")
+            
+        # Check if we received any data via P2P
+        received_experts = []
+        for expert_idx in range(num_local_experts):
+            if not is_unchanged[expert_idx] and not is_received_locally[expert_idx]:
+                expert = new_indices[local2global(expert_idx)]
+                if expert != -1 and expert in experts_recv_loc:
+                    received_experts.append((expert_idx, expert))
+        
+        logger.info(f"[Weight Integrity] (rank {ep_rank}) P2P received experts: {received_experts}")
+        logger.info(f"[Weight Integrity] (rank {ep_rank}) 🏁 Weight integrity check COMPLETED for NEW ENGINE")
+    
+    else:
+        # For existing engines, just do a lightweight check
+        logger.info(f"[Weight Integrity] (rank {ep_rank}) Lightweight check for existing engine...")
+        for expert_idx in range(min(2, num_local_experts)):  # Check first 2 experts only
+            for weight_idx, weight_tensor in enumerate(expert_weights[:1]):  # Check first weight only
+                if expert_idx < weight_tensor.shape[0]:
+                    expert_weight = weight_tensor[expert_idx]
+                    weight_norm = expert_weight.norm().item()
+                    num_zeros = (expert_weight == 0).sum().item()
+                    zero_ratio = num_zeros / expert_weight.numel()
+                    logger.info(f"[Weight Integrity] (rank {ep_rank}) Expert {expert_idx} Weight {weight_idx}: norm={weight_norm:.6f}, zero_ratio={zero_ratio:.2%}")
+    # ===== END WEIGHT INTEGRITY CHECK =====
+
 
 
 def rearrange_expert_weights_inplace(
