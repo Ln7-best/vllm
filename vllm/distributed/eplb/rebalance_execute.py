@@ -108,9 +108,12 @@ def shuffle_layer(
     expert_weights: Iterable[torch.Tensor],
     expert_weights_buffer: Sequence[torch.Tensor],
     ep_group: ProcessGroup,
-) -> None:
+) -> tuple[int, int, int, int]:
     """
     Perform expert weights rearrangement of one layer.
+    
+    Returns:
+        tuple: (send_ops_count, total_send_elements, recv_ops_count, total_recv_elements)
     """
     # Initialize communication volume counters
     total_send_elements = 0
@@ -247,11 +250,11 @@ def shuffle_layer(
         for req in reqs:
             req.wait()
     
-    # Log communication volume statistics
-    print(f"[EPLB WeightTransfer CommVolume] EP Rank {ep_rank}: "
-          f"Send {send_ops_count} ops, {total_send_elements} elements | "
-          f"Recv {recv_ops_count} ops, {total_recv_elements} elements | "
-          f"Total {send_ops_count + recv_ops_count} ops, {total_send_elements + total_recv_elements} elements")
+    # Log communication volume statistics (commented out - will be aggregated at higher level)
+    # print(f"[EPLB WeightTransfer CommVolume] EP Rank {ep_rank}: "
+    #       f"Send {send_ops_count} ops, {total_send_elements} elements | "
+    #       f"Recv {recv_ops_count} ops, {total_recv_elements} elements | "
+    #       f"Total {send_ops_count + recv_ops_count} ops, {total_send_elements + total_recv_elements} elements")
 
     # 5. Copy the weights from the buffer back to the original weights.
     for dst in range(num_local_experts):
@@ -267,6 +270,9 @@ def shuffle_layer(
             src = experts_recv_loc[expert]
             for weight, buffer in zip(expert_weights, expert_weights_buffer):
                 weight[dst].copy_(buffer[src])
+    
+    # Return communication volume statistics
+    return send_ops_count, total_send_elements, recv_ops_count, total_recv_elements
 
 
 def rearrange_expert_weights_inplace(
@@ -351,8 +357,14 @@ def rearrange_expert_weights_inplace(
     # If you figure out the reason, please let me know -- thank you!
     torch.cuda.synchronize()
 
+    # Initialize accumulated communication volume counters
+    total_send_ops = 0
+    total_send_elements = 0
+    total_recv_ops = 0
+    total_recv_elements = 0
+
     for layer in range(num_moe_layers):
-        shuffle_layer(
+        send_ops, send_elements, recv_ops, recv_elements = shuffle_layer(
             num_local_physical_experts,
             ep_rank,
             old_global_expert_indices_cpu[layer].tolist(),
@@ -361,6 +373,19 @@ def rearrange_expert_weights_inplace(
             expert_weights_buffer,
             ep_group,
         )
+        
+        # Accumulate communication volume statistics
+        total_send_ops += send_ops
+        total_send_elements += send_elements
+        total_recv_ops += recv_ops
+        total_recv_elements += recv_elements
+    
+    # Log total communication volume statistics for all layers
+    print(f"[EPLB WeightTransfer CommVolume Total] EP Rank {ep_rank}: "
+          f"Send {total_send_ops} ops, {total_send_elements} elements | "
+          f"Recv {total_recv_ops} ops, {total_recv_elements} elements | "
+          f"Total {total_send_ops + total_recv_ops} ops, {total_send_elements + total_recv_elements} elements | "
+          f"Processed {num_moe_layers} layers")
 
 
 def _map_old_expert_indices_with_rank_mapping(
