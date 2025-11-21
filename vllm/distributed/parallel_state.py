@@ -313,6 +313,8 @@ class GroupCoordinator:
         use_message_queue_broadcaster: bool = False,
         group_name: str | None = None,
     ):
+        import time
+        
         group_name = group_name or "anonymous"
         self.unique_name = _get_unique_name(group_name)
         _register_group(self)
@@ -323,6 +325,8 @@ class GroupCoordinator:
         self_device_group = None
         self_cpu_group = None
 
+        # Timer 1: ProcessGroup Creation
+        process_group_start_time = time.time()
         for ranks in group_ranks:
             device_group = torch.distributed.new_group(
                 ranks, backend=torch_distributed_backend
@@ -336,6 +340,8 @@ class GroupCoordinator:
                 self.rank_in_group = ranks.index(self.rank)
                 self_device_group = device_group
                 self_cpu_group = cpu_group
+        process_group_time_ms = (time.time() - process_group_start_time) * 1000
+        print(f"[GroupCoordinator] {group_name}: ProcessGroup creation took {process_group_time_ms:.2f}ms")
 
         assert self_cpu_group is not None
         assert self_device_group is not None
@@ -357,23 +363,36 @@ class GroupCoordinator:
         self.use_device_communicator = use_device_communicator
         self.device_communicator = None
         if use_device_communicator and self.world_size > 1:
+            # Timer 2: Device Communicator Class Loading
+            class_loading_start_time = time.time()
             device_comm_cls = resolve_obj_by_qualname(
                 current_platform.get_device_communicator_cls()
             )
+            class_loading_time_ms = (time.time() - class_loading_start_time) * 1000
+            print(f"[GroupCoordinator] {group_name}: Device communicator class loading took {class_loading_time_ms:.2f}ms")
+            
+            # Timer 3: Device Communicator Initialization
+            device_comm_init_start_time = time.time()
             self.device_communicator = device_comm_cls(
                 cpu_group=self.cpu_group,
                 device=self.device,
                 device_group=self.device_group,
                 unique_name=self.unique_name,
             )
+            device_comm_init_time_ms = (time.time() - device_comm_init_start_time) * 1000
+            print(f"[GroupCoordinator] {group_name}: Device communicator initialization took {device_comm_init_time_ms:.2f}ms")
 
         from vllm.distributed.device_communicators.shm_broadcast import MessageQueue
 
         self.mq_broadcaster: MessageQueue | None = None
         if use_message_queue_broadcaster and self.world_size > 1:
+            # Timer 4: Message Queue Broadcaster Initialization
+            mq_init_start_time = time.time()
             self.mq_broadcaster = MessageQueue.create_from_process_group(
                 self.cpu_group, 1 << 22, 6
             )
+            mq_init_time_ms = (time.time() - mq_init_start_time) * 1000
+            print(f"[GroupCoordinator] {group_name}: Message queue broadcaster initialization took {mq_init_time_ms:.2f}ms")
 
         from vllm.platforms import current_platform
 
