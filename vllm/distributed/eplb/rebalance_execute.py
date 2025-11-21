@@ -108,12 +108,12 @@ def shuffle_layer(
     expert_weights: Iterable[torch.Tensor],
     expert_weights_buffer: Sequence[torch.Tensor],
     ep_group: ProcessGroup,
-) -> tuple[int, int, int, int]:
+) -> tuple[int, int, int, int, float]:
     """
     Perform expert weights rearrangement of one layer.
     
     Returns:
-        tuple: (send_ops_count, total_send_elements, recv_ops_count, total_recv_elements)
+        tuple: (send_ops_count, total_send_elements, recv_ops_count, total_recv_elements, p2p_time_ms)
     """
     # Initialize communication volume counters
     total_send_elements = 0
@@ -245,10 +245,13 @@ def shuffle_layer(
             recv_ops_count += 1
 
     # 4. Execute the P2P operations. The real communication happens here.
+    import time
+    p2p_start_time = time.time()
     if p2p_ops:
         reqs = batch_isend_irecv(p2p_ops)
         for req in reqs:
             req.wait()
+    p2p_time_ms = (time.time() - p2p_start_time) * 1000  # Convert to milliseconds
     
     # Log communication volume statistics (commented out - will be aggregated at higher level)
     # print(f"[EPLB WeightTransfer CommVolume] EP Rank {ep_rank}: "
@@ -271,8 +274,8 @@ def shuffle_layer(
             for weight, buffer in zip(expert_weights, expert_weights_buffer):
                 weight[dst].copy_(buffer[src])
     
-    # Return communication volume statistics
-    return send_ops_count, total_send_elements, recv_ops_count, total_recv_elements
+    # Return communication volume statistics and P2P timing
+    return send_ops_count, total_send_elements, recv_ops_count, total_recv_elements, p2p_time_ms
 
 
 def rearrange_expert_weights_inplace(
@@ -357,14 +360,15 @@ def rearrange_expert_weights_inplace(
     # If you figure out the reason, please let me know -- thank you!
     torch.cuda.synchronize()
 
-    # Initialize accumulated communication volume counters
+    # Initialize accumulated communication volume counters and P2P timing
     total_send_ops = 0
     total_send_elements = 0
     total_recv_ops = 0
     total_recv_elements = 0
+    total_p2p_time_ms = 0.0
 
     for layer in range(num_moe_layers):
-        send_ops, send_elements, recv_ops, recv_elements = shuffle_layer(
+        send_ops, send_elements, recv_ops, recv_elements, p2p_time_ms = shuffle_layer(
             num_local_physical_experts,
             ep_rank,
             old_global_expert_indices_cpu[layer].tolist(),
@@ -374,18 +378,20 @@ def rearrange_expert_weights_inplace(
             ep_group,
         )
         
-        # Accumulate communication volume statistics
+        # Accumulate communication volume statistics and P2P timing
         total_send_ops += send_ops
         total_send_elements += send_elements
         total_recv_ops += recv_ops
         total_recv_elements += recv_elements
+        total_p2p_time_ms += p2p_time_ms
     
-    # Log total communication volume statistics for all layers
+    # Log total communication volume statistics and P2P timing for all layers
     print(f"[EPLB WeightTransfer CommVolume Total] EP Rank {ep_rank}: "
           f"Send {total_send_ops} ops, {total_send_elements} elements | "
           f"Recv {total_recv_ops} ops, {total_recv_elements} elements | "
           f"Total {total_send_ops + total_recv_ops} ops, {total_send_elements + total_recv_elements} elements | "
-          f"Processed {num_moe_layers} layers")
+          f"Processed {num_moe_layers} layers | "
+          f"P2P Time: {total_p2p_time_ms:.2f}ms")
 
 
 def _map_old_expert_indices_with_rank_mapping(
