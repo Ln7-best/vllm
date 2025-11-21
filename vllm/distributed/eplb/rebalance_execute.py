@@ -112,6 +112,11 @@ def shuffle_layer(
     """
     Perform expert weights rearrangement of one layer.
     """
+    # Initialize communication volume counters
+    total_send_elements = 0
+    total_recv_elements = 0
+    send_ops_count = 0
+    recv_ops_count = 0
     local2global = partial(
         idx_local_to_global,
         local_cnt=num_local_experts,
@@ -175,7 +180,7 @@ def shuffle_layer(
 
         for dst in recv_ranks:
             dst_global = get_global_rank(ep_group, dst)
-            p2p_ops += [
+            send_ops_for_dst = [
                 P2POp(
                     torch.distributed.isend,
                     weight[src],
@@ -183,6 +188,12 @@ def shuffle_layer(
                 )
                 for weight in expert_weights
             ]
+            p2p_ops += send_ops_for_dst
+            
+            # Count send volume
+            for weight in expert_weights:
+                total_send_elements += weight[src].numel()
+                send_ops_count += 1
 
     # 3. Initiate receiving of weights.
     experts_recv_loc: dict[int, int] = {}
@@ -215,7 +226,7 @@ def shuffle_layer(
             src = ranks_to_send[recver_pos - remainder_start]
 
         src_global = get_global_rank(ep_group, src)
-        p2p_ops += [
+        recv_ops_for_src = [
             P2POp(
                 torch.distributed.irecv,
                 weight[dst],
@@ -223,12 +234,24 @@ def shuffle_layer(
             )
             for weight in expert_weights_buffer
         ]
+        p2p_ops += recv_ops_for_src
+        
+        # Count recv volume
+        for weight in expert_weights_buffer:
+            total_recv_elements += weight[dst].numel()
+            recv_ops_count += 1
 
     # 4. Execute the P2P operations. The real communication happens here.
     if p2p_ops:
         reqs = batch_isend_irecv(p2p_ops)
         for req in reqs:
             req.wait()
+    
+    # Log communication volume statistics
+    print(f"[EPLB WeightTransfer CommVolume] EP Rank {ep_rank}: "
+          f"Send {send_ops_count} ops, {total_send_elements} elements | "
+          f"Recv {recv_ops_count} ops, {total_recv_elements} elements | "
+          f"Total {send_ops_count + recv_ops_count} ops, {total_send_elements + total_recv_elements} elements")
 
     # 5. Copy the weights from the buffer back to the original weights.
     for dst in range(num_local_experts):

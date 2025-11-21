@@ -23,69 +23,37 @@ class TimingExtractor:
     """Extract and analyze timing information from vLLM logs."""
     
     def __init__(self):
-        # Define timing patterns for all known timing categories
-        self.timing_patterns = [
-            # Level 1: Top-level Elastic EP Scale Down
-            r'\[Elastic EP Scale Down Timing\] Total: ([\d.]+)ms',
-            
-            # Level 2: Engine Core Reinitialization  
-            r'\[Engine Core Reinit Timing\] Cleanup & Shutdown: ([\d.]+)ms',
-            r'\[Engine Core Reinit Timing\] Config Update: ([\d.]+)ms',
-            r'\[Engine Core Reinit Timing\] Model Executor Reinit: ([\d.]+)ms',
-            
-            # Level 3: GPU Worker Reinitialization
-            r'\[Elastic EP Scale Down Timing\] EPLB Rearrangement: ([\d.]+)ms',
-            r'\[GPU Worker Reinit Timing\] Cleanup Dist Env: ([\d.]+)ms',
-            r'\[GPU Worker Reinit Timing\] Reconfigure Parallel Config: ([\d.]+)ms',
-            r'\[GPU Worker Reinit Timing\] Init Worker Distributed Env: ([\d.]+)ms',
-            r'\[GPU Worker Reinit Timing\] Reconfigure MoE: ([\d.]+)ms',
-            r'\[GPU Worker Reinit Timing\] Total: ([\d.]+)ms',
-            
-            # Level 4: Worker Distributed Environment Init
-            r'\[Worker Distributed Init Timing\] Batch Invariance Init: ([\d.]+)ms',
-            r'\[Worker Distributed Init Timing\] Custom All-Reduce Config: ([\d.]+)ms',
-            r'\[Worker Distributed Init Timing\] Distributed Environment Init: ([\d.]+)ms',
-            r'\[Worker Distributed Init Timing\] Model Parallel Init: ([\d.]+)ms',
-            r'\[Worker Distributed Init Timing\] EC Transfer Init: ([\d.]+)ms',
-            r'\[Worker Distributed Init Timing\] Total: ([\d.]+)ms',
-            
-            # Level 5: Model Parallel Groups Creation
-            r'\[Model Parallel Init Timing\] TP Group Creation: ([\d.]+)ms',
-            r'\[Model Parallel Init Timing\] DCP Group Creation: ([\d.]+)ms',
-            r'\[Model Parallel Init Timing\] PP Group Creation: ([\d.]+)ms',
-            r'\[Model Parallel Init Timing\] DP Group Creation: ([\d.]+)ms',
-            r'\[Model Parallel Init Timing\] EP Group Creation: ([\d.]+)ms',
-            r'\[Model Parallel Init Timing\] Total Group Creation: ([\d.]+)ms',
-            
-            # Level 6: EPLB Expert Rebalancing
-            r'\[EPLB Timing\] Load Information Preprocessing: ([\d.]+)ms',
-            r'\[EPLB Timing\] Expert Rebalance Algorithm: ([\d.]+)ms',
-            r'\[EPLB Timing\] Expert Weights Transfer: ([\d.]+)ms',
-        ]
-        
-        # Compile patterns for efficiency
-        self.compiled_patterns = [(re.compile(pattern), pattern) for pattern in self.timing_patterns]
+        # Use a single universal pattern to match all timing logs
+        # This pattern handles the log prefix and extracts timing category, description, and value
+        self.universal_pattern = re.compile(r'.*\[([^\]]+Timing)\] ([^:]+): ([\d.]+)ms')
         
         # Storage for extracted timings
         self.timings: Dict[str, List[float]] = defaultdict(list)
+        self.debug_mode = False
         
-    def extract_timing_name(self, pattern: str) -> str:
-        """Extract timing name from regex pattern."""
-        # Extract the timing description between brackets and colon
-        match = re.search(r'\[(.*?)\].*?:\s*\(', pattern)
-        if match:
-            return match.group(1)
-        return pattern
+    def add_debug_mode(self):
+        """Enable debug mode to help troubleshoot pattern matching."""
+        self.debug_mode = True
     
     def process_line(self, line: str) -> None:
         """Process a single log line to extract timing information."""
-        for compiled_pattern, original_pattern in self.compiled_patterns:
-            match = compiled_pattern.search(line)
-            if match:
-                timing_value = float(match.group(1))
-                timing_name = self.extract_timing_name(original_pattern)
-                self.timings[timing_name].append(timing_value)
-                break  # Only match the first pattern to avoid duplicates
+        if self.debug_mode and ("Timing]" in line):
+            print(f"DEBUG: Processing line: {line[:100]}...")
+        
+        match = self.universal_pattern.search(line)
+        if match:
+            timing_category = match.group(1)  # e.g., "Worker Distributed Init Timing"
+            timing_description = match.group(2)  # e.g., "Model Parallel Init"
+            timing_value = float(match.group(3))  # e.g., 21629.69
+            
+            # Create a combined timing name for storage
+            timing_name = f"{timing_category}] {timing_description}"
+            self.timings[timing_name].append(timing_value)
+            
+            if self.debug_mode:
+                print(f"DEBUG: Extracted - Category: '{timing_category}', Description: '{timing_description}', Value: {timing_value}ms")
+        elif self.debug_mode and ("Timing]" in line):
+            print("DEBUG: No match found for timing line")
     
     def process_log(self, log_source) -> None:
         """Process log from file or stdin."""
@@ -112,7 +80,7 @@ class TimingExtractor:
         print("🌲 Elastic EP Scale Down Timing Analysis")
         print("=" * 80)
         
-        # Define hierarchy groups
+        # Define hierarchy groups - updated to match actual log format
         hierarchy = {
             "📊 Level 1 - Top Level Scale Down": [
                 "Elastic EP Scale Down Timing] Total"
@@ -152,6 +120,11 @@ class TimingExtractor:
                 "EPLB Timing] Expert Weights Transfer"
             ]
         }
+        
+        # Debug: Print all timing keys found (only in debug mode)
+        if self.debug_mode:
+            print(f"🔍 Found timing keys: {list(self.timings.keys())}")
+            print(f"🎯 Total timing categories: {len(self.timings)}")
         
         for level_name, timing_keys in hierarchy.items():
             print(f"\n{level_name}")
@@ -231,11 +204,17 @@ Examples:
     parser.add_argument('log_file', nargs='?', help='Log file to process (use stdin if not provided)')
     parser.add_argument('--json', metavar='FILE', help='Export results to JSON file')
     parser.add_argument('--table-only', action='store_true', help='Show only summary table')
+    parser.add_argument('--debug', action='store_true', help='Enable debug mode to troubleshoot pattern matching')
     
     args = parser.parse_args()
     
     # Initialize extractor
     extractor = TimingExtractor()
+    
+    # Enable debug mode if requested
+    if args.debug:
+        extractor.debug_mode = True
+        print("🐛 Debug mode enabled")
     
     # Process log source
     try:
