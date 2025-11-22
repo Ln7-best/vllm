@@ -1382,7 +1382,9 @@ class FusedMoE(CustomOp):
                 e_score_correction_bias=e_score_correction_bias,
             )
             # 添加日志打印topk_ids
-            logger.info(f"grouped_topk returned topk_ids: {topk_ids}")
+            # logger.info(f"grouped_topk returned topk_ids: {topk_ids}")
+            # 添加断言检查专家编号是否超过63
+            assert topk_ids.max() <= 63, f"Expert index exceeds 63: {topk_ids.max()}"
             if indices_type is not None:
                 topk_ids = topk_ids.to(dtype=indices_type)
         elif e_score_correction_bias is not None:
