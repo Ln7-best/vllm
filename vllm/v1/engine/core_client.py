@@ -1304,7 +1304,7 @@ class DPLBAsyncMPClient(DPAsyncMPClient):
             reconfig_futures.append(asyncio.create_task(coro))
 
         logger.info("All reconfigure messages sent, starting engine creation")
-
+        await asyncio.sleep(0)
         # Phase 2: Create new engines now that reconfig messages have been sent
         # self.resources.engine_manager is guaranteed to be
         # CoreEngineActorManager for RayDPClient
