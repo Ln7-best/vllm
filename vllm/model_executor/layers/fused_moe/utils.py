@@ -6,6 +6,9 @@ from math import prod
 import torch
 
 from vllm import _custom_ops as ops
+from vllm.logger import init_logger
+
+logger = init_logger(__name__)
 from vllm.model_executor.layers.quantization.utils.fp8_utils import (
     per_token_group_quant_fp8,
 )
@@ -105,10 +108,34 @@ def _resize_cache(x: torch.Tensor, v: tuple[int, ...]) -> torch.Tensor:
     Shrink the given tensor and apply the given view to it.  This is
     used to resize the intermediate fused_moe caches.
     """
-    assert prod(v) <= x.numel(), (
-        f"{v} ({prod(v)}) <= {x.shape} ({x.numel()})"
+    required_size = prod(v)
+    available_size = x.numel()
+    
+    # [DEBUG] Log detailed information for scale up debugging
+    logger.info(
+        "[Scale Up Debug] _resize_cache: requested_shape=%s, required_size=%d, "
+        "tensor_shape=%s, available_size=%d, tensor_device=%s, tensor_dtype=%s",
+        v, required_size, x.shape, available_size, x.device, x.dtype
+    )
+    
+    if required_size > available_size:
+        logger.error(
+            "[Scale Up Debug] _resize_cache ASSERTION FAILURE: "
+            "required_size=%d > available_size=%d, requested_shape=%s, tensor_shape=%s",
+            required_size, available_size, v, x.shape
+        )
+        # Add more context about the failure
+        logger.error(
+            "[Scale Up Debug] This indicates workspace was allocated with insufficient size. "
+            "This commonly happens during elastic EP scale up when workspace shapes are "
+            "calculated based on old device configuration."
+        )
+    
+    assert required_size <= available_size, (
+        f"_resize_cache assertion failed: requested {v} ({required_size}) > available {x.shape} ({available_size}). "
+        f"This suggests workspace allocation mismatch during scale up."
     )  # CUDAGRAPH unfriendly?
-    return x.flatten()[: prod(v)].view(*v)
+    return x.flatten()[: required_size].view(*v)
 
 
 def _nvfp4_quantize(

@@ -4,6 +4,10 @@
 
 import torch
 
+from vllm.logger import init_logger
+
+logger = init_logger(__name__)
+
 import vllm.model_executor.layers.fused_moe.modular_kernel as mk
 from vllm.model_executor.layers.fused_moe.config import FusedMoEQuantConfig
 from vllm.model_executor.layers.fused_moe.fused_moe import try_get_optimal_moe_config
@@ -874,6 +878,22 @@ class BatchedTritonExperts(mk.FusedMoEPermuteExpertsUnpermute):
         workspace13 = (num_experts, max_num_tokens * num_dp, max(K, N))
         workspace2 = (num_experts, max_num_tokens * num_dp, (N // 2))
         output = (num_experts, max_num_tokens * num_dp, K)
+        
+        # [DEBUG] Log workspace shape calculations for scale up debugging
+        logger.info(
+            "[Scale Up Debug] BatchedTritonExperts workspace_shapes: "
+            "M=%d, N=%d, K=%d, topk=%d, global_num_experts=%d, local_num_experts=%d, "
+            "num_dispatchers=%d, max_num_tokens=%d",
+            M, N, K, topk, global_num_experts, local_num_experts, num_dp, max_num_tokens
+        )
+        logger.info(
+            "[Scale Up Debug] Calculated workspace shapes: "
+            "workspace13=%s (numel=%d), workspace2=%s (numel=%d), output=%s (numel=%d)",
+            workspace13, workspace13[0] * workspace13[1] * workspace13[2],
+            workspace2, workspace2[0] * workspace2[1] * workspace2[2],
+            output, output[0] * output[1] * output[2]
+        )
+        
         return (workspace13, workspace2, output)
 
     def apply(
@@ -946,6 +966,48 @@ class BatchedTritonExperts(mk.FusedMoEPermuteExpertsUnpermute):
 
         # We can reuse the memory between these because by the time we need
         # cache3, we're done with cache1
+        
+        # [DEBUG] Log workspace allocation details for scale up debugging
+        logger.info(
+            "[Scale Up Debug] Before _resize_cache: E=%d, max_num_tokens=%d, N=%d, K=%d",
+            E, max_num_tokens, N, K
+        )
+        logger.info(
+            "[Scale Up Debug] workspace13 shape=%s, numel=%d, dtype=%s, device=%s",
+            workspace13.shape, workspace13.numel(), workspace13.dtype, workspace13.device
+        )
+        logger.info(
+            "[Scale Up Debug] workspace2 shape=%s, numel=%d, dtype=%s, device=%s",
+            workspace2.shape, workspace2.numel(), workspace2.dtype, workspace2.device
+        )
+        
+        # Calculate required sizes for _resize_cache
+        cache1_required_size = E * max_num_tokens * N
+        cache2_required_size = E * max_num_tokens * (N // 2)
+        
+        logger.info(
+            "[Scale Up Debug] Required sizes: cache1=%d (E=%d * max_num_tokens=%d * N=%d), "
+            "cache2=%d (E=%d * max_num_tokens=%d * N//2=%d)",
+            cache1_required_size, E, max_num_tokens, N,
+            cache2_required_size, E, max_num_tokens, N // 2
+        )
+        logger.info(
+            "[Scale Up Debug] Available sizes: workspace13=%d, workspace2=%d",
+            workspace13.numel(), workspace2.numel()
+        )
+        
+        # Check if workspace sizes are sufficient
+        if cache1_required_size > workspace13.numel():
+            logger.error(
+                "[Scale Up Debug] ERROR: workspace13 insufficient! Required=%d > Available=%d",
+                cache1_required_size, workspace13.numel()
+            )
+        if cache2_required_size > workspace2.numel():
+            logger.error(
+                "[Scale Up Debug] ERROR: workspace2 insufficient! Required=%d > Available=%d",
+                cache2_required_size, workspace2.numel()
+            )
+        
         intermediate_cache1 = _resize_cache(workspace13, (E, max_num_tokens, N))
         intermediate_cache2 = _resize_cache(workspace2, (E, max_num_tokens, N // 2))
 
