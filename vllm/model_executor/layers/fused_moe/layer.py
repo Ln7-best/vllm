@@ -1381,6 +1381,8 @@ class FusedMoE(CustomOp):
                 routed_scaling_factor=routed_scaling_factor,
                 e_score_correction_bias=e_score_correction_bias,
             )
+            # 添加日志打印topk_ids
+            logger.info(f"grouped_topk returned topk_ids: {topk_ids}")
             if indices_type is not None:
                 topk_ids = topk_ids.to(dtype=indices_type)
         elif e_score_correction_bias is not None:
