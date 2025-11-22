@@ -1383,13 +1383,9 @@ class FusedMoE(CustomOp):
             )
             # 添加日志打印topk_ids
             logger.info(f"grouped_topk returned topk_ids: {topk_ids}")
-            # 动态检查专家编号是否超过实际专家数量
-            if hasattr(self, 'num_experts') and self.num_experts is not None:
-                max_expert_id = self.num_experts - 1
-                if topk_ids.max() > max_expert_id:
-                    logger.warning(f"Expert index {topk_ids.max()} exceeds max expert id {max_expert_id}")
-            else:
-                logger.info(f"Max expert index in topk_ids: {topk_ids.max()}")
+            # logger.info(f"grouped_topk returned topk_ids: {topk_ids}")
+            # 添加断言检查专家编号是否超过63
+            assert topk_ids.max() <= 63, f"Expert index exceeds 63: {topk_ids.max()}"
             if indices_type is not None:
                 topk_ids = topk_ids.to(dtype=indices_type)
         elif e_score_correction_bias is not None:
