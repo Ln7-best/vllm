@@ -1305,6 +1305,7 @@ class DPLBAsyncMPClient(DPAsyncMPClient):
 
         logger.info("All reconfigure messages sent, starting engine creation")
         await asyncio.sleep(0)
+        logger.info("[Scale Up Debug] Event loop yielded, tasks should be running now")
         # Phase 2: Create new engines now that reconfig messages have been sent
         # self.resources.engine_manager is guaranteed to be
         # CoreEngineActorManager for RayDPClient
