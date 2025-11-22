@@ -785,7 +785,7 @@ class Worker(WorkerBase):
             cleanup_dist_env_and_memory,
             get_ep_group,
         )
-
+        logger.info("entering reinitialize_distributed")
         old_ep_size = get_ep_group().world_size
         old_ep_rank = get_ep_group().rank
         new_ep_size = (
